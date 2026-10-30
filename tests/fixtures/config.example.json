@@ -1,0 +1,58 @@
+{
+  "mode": "enforce",
+  "suspend_timeout_s": 110,
+  "suspend_disabled_sessions": [],
+  "user_whitelist": [],
+  "user_blacklist": [],
+  "path_whitelist": [],
+  "path_deny": [
+    "C:\\\\Users\\\\someone\\\\.ssh",
+    "C:\\\\Users\\\\someone\\\\.config"
+  ],
+  "strict_path_whitelist": false,
+  "base_check_enabled": true,
+  "project_roots": [
+    "<filled by fixture_config>"
+  ],
+  "destination_allowlist": [],
+  "exempt_tools": [],
+  "strip_unmanaged_tools": false,
+  "jev_enabled": false,
+  "jev_base_url": "http://127.0.0.1:11434/v1/systemone",
+  "jev_model": "nimble",
+  "fast_judge_backend": "jev",
+  "fast_allow_score": 30,
+  "fast_block_score": 70,
+  "jev_timeout_s": 30,
+  "fast_min_confidence": 0.6,
+  "jev_api_key": "",
+  "llm_enabled": false,
+  "llm_mode": "astrbot_provider",
+  "llm_base_url": "",
+  "llm_model": "",
+  "llm_api_key": "",
+  "llm_provider_id": "",
+  "admins": [
+    "1234567"
+  ],
+  "inline_reply": false,
+  "secret_patterns": [
+    "(?i)-----BEGIN [A-Z ]{0,63}PRIVATE KEY-----",
+    "(?i)(?:api[_-]?key|token|secret)[ ]{0,4}[:=][ ]{0,4}[A-Za-z0-9_-]{12,}"
+  ],
+  "deep_analysis_timeout_s": 60,
+  "decision_budget_s": 120,
+  "shingle_k": 5,
+  "shingle_min_chars": 24,
+  "shingle_min_matches": 2,
+  "shingle_min_covered_chars": 48,
+  "taint_ttl_s": 1800,
+  "shingle_capacity": 4096,
+  "audit_retention_days": 7,
+  "trajectory_retention_per_user": 50,
+  "web_admin_usernames": [
+    "admin"
+  ],
+  "web_subject_map": [],
+  "trust_project_roots": false
+}

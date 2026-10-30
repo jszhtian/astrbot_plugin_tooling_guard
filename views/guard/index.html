@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tooling Guard 控制台</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1f2328;
+        --muted: #5b6572;
+        --line: #d5dae1;
+        --bg: #ffffff;
+        --alt: #f6f8fa;
+        --accent: #1f6feb;
+        --danger: #b62324;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e6edf3;
+          --muted: #9aa4b2;
+          --line: #30363d;
+          --bg: #0d1117;
+          --alt: #161b22;
+          --accent: #4f9dff;
+          --danger: #ff7b72;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 20px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      h2 { font-size: 15px; margin: 24px 0 8px; }
+      .hint { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
+      fieldset {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin: 0 0 12px;
+      }
+      legend { padding: 0 6px; color: var(--muted); font-size: 12px; }
+      label { display: inline-flex; flex-direction: column; gap: 4px; margin: 0 12px 8px 0; font-size: 12px; color: var(--muted); }
+      input, select {
+        min-width: 150px;
+        padding: 5px 7px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+      }
+      button {
+        padding: 5px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--alt);
+        color: var(--fg);
+        font: inherit;
+        cursor: pointer;
+      }
+      button.primary { border-color: var(--accent); color: var(--accent); }
+      button.danger { border-color: var(--danger); color: var(--danger); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { border-bottom: 1px solid var(--line); padding: 5px 6px; text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+      td.wrap { word-break: break-all; }
+      tbody tr { cursor: pointer; }
+      tbody tr:hover { background: var(--alt); }
+      .row-actions { display: flex; gap: 6px; }
+      .status-bar { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+      .notice { margin: 10px 0; padding: 8px 10px; border-left: 3px solid var(--accent); background: var(--alt); border-radius: 4px; }
+      .notice.error { border-left-color: var(--danger); color: var(--danger); }
+      pre {
+        margin: 0;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--alt);
+        overflow: auto;
+        max-height: 320px;
+        font-size: 12px;
+      }
+      .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+      .hidden { display: none; }
+      .detail-actions { margin: 0 0 10px; }
+      .detail-actions button { padding: 7px 16px; }
+      #detail-host pre { max-height: 260px; }
+      .verdict-allow { color: var(--accent); }
+      .verdict-bad { color: var(--danger); }
+    </style>
+    <script src="/api/plugin/page/bridge-sdk.js"></script>
+  </head>
+  <body>
+    <h1>Tooling Guard 控制台</h1>
+    <p class="hint">
+      只读列表与挂起审批：本页不编辑配置、不新建端口、不直连数据库；判定仍由网关做出，批准只豁免挂起。
+    </p>
+
+    <div class="status-bar" id="status-bar">
+      <span id="status-identity">身份：读取中…</span>
+      <span id="status-mode">模式：—</span>
+      <span id="status-route">审查器：—</span>
+      <span id="status-degraded">最近降级：—</span>
+    </div>
+    <div class="notice hidden" id="notice"></div>
+
+    <fieldset>
+      <legend>筛选（多条件为 AND）</legend>
+      <label>发起人 subject<input id="f-subject" placeholder="platform_id:sender_id" /></label>
+      <label>会话 session<input id="f-session" placeholder="platform_id:type:session_id" /></label>
+      <label>
+        决定
+        <select id="f-decision">
+          <option value="">全部</option>
+          <option value="allow_passthrough">allow_passthrough</option>
+          <option value="allow_fast">allow_fast</option>
+          <option value="allow_trajectory">allow_trajectory</option>
+          <option value="allow_approved_retry">allow_approved_retry</option>
+          <option value="deny_rule">deny_rule</option>
+          <option value="deny_judge">deny_judge</option>
+          <option value="deny_policy">deny_policy</option>
+          <option value="deny_requester">deny_requester</option>
+          <option value="suspended">suspended</option>
+          <option value="timeout_deny">timeout_deny</option>
+          <option value="canceled_external">canceled_external</option>
+        </select>
+      </label>
+      <label>规则 rule_id<input id="f-rule" placeholder="R3" /></label>
+      <label>起始 since<input id="f-since" type="datetime-local" /></label>
+      <label>结束 until<input id="f-until" type="datetime-local" /></label>
+      <label>每页条数<input id="f-limit" type="number" min="1" max="200" value="50" /></label>
+      <div>
+        <button class="primary" id="btn-search" type="button">查询审计行</button>
+        <button id="btn-tickets" type="button">刷新挂起票据</button>
+      </div>
+    </fieldset>
+
+    <h2>挂起票据</h2>
+    <div id="tickets-host"><div class="empty">尚未加载。</div></div>
+
+    <h2>审批详情</h2>
+    <div class="hint">点票据或审计行即可在这里看：这次要执行什么，三层各自怎么说，然后直接批准或拒绝。</div>
+    <div id="detail-host"><div class="empty">在列表中选择一行查看详情。</div></div>
+
+    <h2>审计行</h2>
+    <div id="events-host"><div class="empty">尚未加载。</div></div>
+
+    <script>
+      (function () {
+        "use strict";
+
+        var bridge = window.AstrBotPluginView || null;
+        var state = { admin: false, subject: null, tickets: [], events: [], ticketId: null, ticket: null };
+
+        function el(id) {
+          return document.getElementById(id);
+        }
+
+        function showNotice(text, isError) {
+          var box = el("notice");
+          if (!text) {
+            box.className = "notice hidden";
+            box.textContent = "";
+            return;
+          }
+          box.className = isError ? "notice error" : "notice";
+          box.textContent = text;
+        }
+
+        function callEndpoint(method, endpoint, arg) {
+          if (!bridge) {
+            return Promise.reject(new Error("未找到宿主 bridge SDK，页面需要在 dashboard 内打开。"));
+          }
+          if (method === "GET") {
+            return bridge.apiGet(endpoint, arg || {});
+          }
+          return bridge.apiPost(endpoint, arg || {});
+        }
+
+        function toIso(value) {
+          if (!value) {
+            return "";
+          }
+          var parsed = new Date(value);
+          return isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+        }
+
+        function text(value) {
+          if (value === null || value === undefined || value === "") {
+            return "—";
+          }
+          return String(value);
+        }
+
+        function cell(row, key, extraClass) {
+          var td = document.createElement("td");
+          td.textContent = text(row[key]);
+          if (extraClass) {
+            td.className = extraClass;
+          }
+          return td;
+        }
+
+        function button(label, extraClass, onClick) {
+          var node = document.createElement("button");
+          node.type = "button";
+          node.textContent = label;
+          if (extraClass) {
+            node.className = extraClass;
+          }
+          node.addEventListener("click", function (event) {
+            event.stopPropagation();
+            onClick(node);
+          });
+          return node;
+        }
+
+        function table(headers, rows, buildRow) {
+          var node = document.createElement("table");
+          var head = document.createElement("thead");
+          var headRow = document.createElement("tr");
+          headers.forEach(function (name) {
+            var th = document.createElement("th");
+            th.textContent = name;
+            headRow.appendChild(th);
+          });
+          head.appendChild(headRow);
+          node.appendChild(head);
+          var body = document.createElement("tbody");
+          rows.forEach(function (row) {
+            body.appendChild(buildRow(row));
+          });
+          node.appendChild(body);
+          return node;
+        }
+
+        function applyScope(scope) {
+          if (!scope) {
+            return;
+          }
+          state.admin = Boolean(scope.admin);
+          state.subject = scope.subject_key || null;
+          el("status-identity").textContent =
+            "身份：" + text(scope.username) + (state.admin ? "（管理员）" : "（普通用户）") +
+            (state.subject ? " · 主体 " + state.subject : " · 无可映射主体");
+          if (!state.admin) {
+            el("f-subject").value = state.subject || "";
+            el("f-subject").disabled = true;
+          }
+        }
+
+        function loadStatus() {
+          return callEndpoint("GET", "guard/api/status")
+            .then(function (data) {
+              el("status-mode").textContent =
+                "模式：" + text(data.mode) + (data.enabled ? "（已启用）" : "（未启用）");
+              var reviewers = data.reviewers || [];
+              el("status-route").textContent =
+                "审查器：" + (reviewers.length ? reviewers.map(function (item) {
+                  return item.name + (item.enabled ? "" : "(停用)") + (item.busy ? "(忙)" : "");
+                }).join("、") : "未观察到");
+              var degraded = data.degraded || [];
+              el("status-degraded").textContent = "最近降级：" + (degraded.length ? degraded.join("、") : "无");
+            })
+            .catch(function (error) {
+              showNotice("状态读取失败：" + error.message, true);
+            });
+        }
+
+        function loadTickets() {
+          return callEndpoint("GET", "guard/api/tickets")
+            .then(function (data) {
+              applyScope(data.scope);
+              state.tickets = data.tickets || [];
+              var host = el("tickets-host");
+              host.textContent = "";
+              if (!state.tickets.length) {
+                host.appendChild(emptyNote("没有挂起中的票据：本来就没有待处理票据时，列表就是空的。只有 dashboard 未给出登录身份（request.username 为空）的访问才会被拒绝。"));
+                return;
+              }
+              host.appendChild(
+                table(
+                  ["票据", "状态", "主体", "会话", "工具", "创建时间", "操作"],
+                  state.tickets,
+                  function (row) {
+                    var tr = document.createElement("tr");
+                    tr.appendChild(cell(row, "ticket_id"));
+                    tr.appendChild(cell(row, "state"));
+                    tr.appendChild(cell(row, "subject_key"));
+                    tr.appendChild(cell(row, "session_key"));
+                    tr.appendChild(cell(row, "tool_name"));
+                    tr.appendChild(cell(row, "created_at"));
+                    var actions = document.createElement("td");
+                    var wrap = document.createElement("div");
+                    wrap.className = "row-actions";
+                    wrap.appendChild(button("详情", "", function () { loadTicket(row.ticket_id); }));
+                    if (state.admin) {
+                      wrap.appendChild(button("批准", "primary", function (node) {
+                        decide(row.ticket_id, "approve", null, node);
+                      }));
+                      wrap.appendChild(button("拒绝", "danger", function (node) {
+                        decide(row.ticket_id, "deny", null, node);
+                      }));
+                    }
+                    actions.appendChild(wrap);
+                    tr.appendChild(actions);
+                    tr.addEventListener("click", function () { loadTicket(row.ticket_id); });
+                    return tr;
+                  }
+                )
+              );
+            })
+            .catch(function (error) {
+              showNotice("票据读取失败：" + error.message, true);
+            });
+        }
+
+        function emptyNote(message) {
+          var node = document.createElement("div");
+          node.className = "empty";
+          node.textContent = message;
+          return node;
+        }
+
+        function loadEvents() {
+          var params = {
+            limit: Number(el("f-limit").value) || 50,
+          };
+          var fields = {
+            subject: el("f-subject"),
+            session: el("f-session"),
+            decision: el("f-decision"),
+            rule_id: el("f-rule"),
+            since: el("f-since"),
+            until: el("f-until"),
+          };
+          if (fields.subject.value.trim()) {
+            params.subject = fields.subject.value.trim();
+          }
+          if (fields.session.value.trim()) {
+            params.session = fields.session.value.trim();
+          }
+          if (fields.decision.value) {
+            params.decision = fields.decision.value;
+          }
+          if (fields.rule_id.value.trim()) {
+            params.rule_id = fields.rule_id.value.trim();
+          }
+          var since = toIso(fields.since.value);
+          var until = toIso(fields.until.value);
+          if (since) {
+            params.since = since;
+          }
+          if (until) {
+            params.until = until;
+          }
+          return callEndpoint("GET", "guard/api/events", params)
+            .then(function (data) {
+              applyScope(data.scope);
+              state.events = data.events || [];
+              var host = el("events-host");
+              host.textContent = "";
+              if (!state.events.length) {
+                host.appendChild(emptyNote("没有匹配的审计行（决定取值不认识或筛选条件过窄时为空）。"));
+                return;
+              }
+              host.appendChild(
+                table(
+                  ["时间", "决定", "规则", "工具", "主体", "票据", "摘要"],
+                  state.events,
+                  function (row) {
+                    var tr = document.createElement("tr");
+                    tr.appendChild(cell(row, "ts"));
+                    tr.appendChild(cell(row, "decision"));
+                    tr.appendChild(cell(row, "rule_id"));
+                    tr.appendChild(cell(row, "tool_name"));
+                    tr.appendChild(cell(row, "subject_key"));
+                    tr.appendChild(cell(row, "ticket_id"));
+                    tr.appendChild(cell(row, "summary_line", "wrap"));
+                    tr.addEventListener("click", function () {
+                      if (row.ticket_id) {
+                        loadTicket(row.ticket_id);
+                      }
+                    });
+                    return tr;
+                  }
+                )
+              );
+            })
+            .catch(function (error) {
+              showNotice("审计读取失败：" + error.message, true);
+            });
+        }
+
+        function loadTicket(ticketId) {
+          return callEndpoint("GET", "guard/api/tickets/" + encodeURIComponent(ticketId))
+            .then(function (data) {
+              applyScope(data.scope);
+              var host = el("detail-host");
+              host.textContent = "";
+              var ticket = data.ticket || {};
+              var context = data.context || null;
+              state.ticketId = ticketId;
+              state.ticket = ticket;
+              host.appendChild(heading("票据 " + text(ticket.ticket_id)));
+              host.appendChild(detailHeader(ticket, context));
+              if (state.admin && ticket.state === "pending") {
+                host.appendChild(detailActions(ticketId));
+              } else {
+                host.appendChild(emptyNote(
+                  ticket.state === "pending"
+                    ? "当前身份不是管理员：可以看，但不能批准或拒绝。"
+                    : "这条票据已经结束（" + text(ticket.state) + "），批准与拒绝都不再生效。"
+                ));
+              }
+              host.appendChild(heading("执行了什么"));
+              host.appendChild(callBlock(context));
+              host.appendChild(heading("三层审查结论"));
+              host.appendChild(reviewTable(context));
+              host.appendChild(heading("票据字段"));
+              var lines = [];
+              Object.keys(ticket).forEach(function (key) {
+                lines.push(key + ": " + text(ticket[key]));
+              });
+              host.appendChild(codeBlock(lines.join("\n")));
+              var transitions = data.transitions || [];
+              if (transitions.length) {
+                host.appendChild(heading("状态迁移"));
+                host.appendChild(
+                  table(["时间", "从", "到", "操作者", "原因"], transitions, function (row) {
+                    var tr = document.createElement("tr");
+                    tr.appendChild(cell(row, "at"));
+                    tr.appendChild(cell(row, "from_state"));
+                    tr.appendChild(cell(row, "to_state"));
+                    tr.appendChild(cell(row, "actor"));
+                    tr.appendChild(cell(row, "reason", "wrap"));
+                    return tr;
+                  })
+                );
+              }
+              var auditRows = data.audit || [];
+              if (auditRows.length) {
+                host.appendChild(heading("相关审计行"));
+                host.appendChild(
+                  table(["时间", "决定", "规则", "摘要"], auditRows, function (row) {
+                    var tr = document.createElement("tr");
+                    tr.appendChild(cell(row, "ts"));
+                    tr.appendChild(cell(row, "decision"));
+                    tr.appendChild(cell(row, "rule_id"));
+                    tr.appendChild(cell(row, "summary_line", "wrap"));
+                    return tr;
+                  })
+                );
+              }
+            })
+            .catch(function (error) {
+              var host = el("detail-host");
+              host.textContent = "";
+              host.appendChild(emptyNote("详情读取失败：" + error.message));
+            });
+        }
+
+        function detailHeader(ticket, context) {
+          var parts = [];
+          parts.push("工具 " + text(ticket.tool_name));
+          if (context) {
+            parts.push("动作 " + text(context.verb));
+            parts.push("层级 " + text(context.tier));
+            parts.push("判定 " + text(context.decision));
+            parts.push("审查路线 " + text(context.judge_route));
+          }
+          parts.push("状态 " + text(ticket.state));
+          parts.push("主体 " + text(ticket.subject_key));
+          parts.push("会话 " + text(ticket.session_key));
+          parts.push("创建 " + text(ticket.created_at));
+          parts.push("窗口截止 " + text(ticket.window_deadline));
+          var node = document.createElement("div");
+          node.className = "hint";
+          node.textContent = parts.join(" · ");
+          return node;
+        }
+
+        function detailActions(ticketId) {
+          var actions = document.createElement("div");
+          actions.className = "row-actions detail-actions";
+          actions.appendChild(button("批准该票据", "primary", function (node) {
+            decide(ticketId, "approve", null, node);
+          }));
+          actions.appendChild(button("拒绝该票据", "danger", function (node) {
+            decide(ticketId, "deny", prompt("拒绝原因（可留空）") || "", node);
+          }));
+          return actions;
+        }
+
+        function callBlock(context) {
+          if (!context) {
+            return emptyNote("这条票据没有可读的调用记录（0.6.1 之前写入的审计行没有这项）。");
+          }
+          var lines = [];
+          lines.push("动作：" + text(context.verb) + " · 层级：" + text(context.tier));
+          lines.push("目标：" + joinList(context.targets, "、"));
+          lines.push("参数：" + text(context.arguments));
+          lines.push("规则命中：" + joinList(context.rule_hits, "、"));
+          lines.push("标签：" + joinList(context.labels, "、"));
+          return codeBlock(lines.join("\n"));
+        }
+
+        function joinList(values, separator) {
+          if (!values || !values.length) {
+            return "—";
+          }
+          return values.map(function (value) { return text(value); }).join(separator);
+        }
+
+        function reviewVerdict(report) {
+          var bits = [];
+          bits.push("结论 " + text(report.outcome));
+          bits.push("决定 " + text(report.decision));
+          if (report.score !== undefined) {
+            bits.push("分数 " + report.score);
+          }
+          if (report.confidence !== undefined) {
+            bits.push("置信 " + report.confidence);
+          }
+          var extras = [];
+          ["skipped", "note", "degraded"].forEach(function (key) {
+            if (report[key]) {
+              extras.push(key + "=" + report[key]);
+            }
+          });
+          if (extras.length) {
+            bits.push(extras.join(" "));
+          }
+          return bits.join(" · ");
+        }
+
+        function reviewTable(context) {
+          var review = (context && context.review) || {};
+          var names = Object.keys(review);
+          if (!names.length) {
+            return emptyNote("这条记录里没有审查器结论（0.6.1 之前写入的审计行没有这项）。");
+          }
+          var rows = names.map(function (name) {
+            return { name: name, report: review[name] || {} };
+          });
+          return table(["审查器", "判定", "说明"], rows, function (row) {
+            var tr = document.createElement("tr");
+            tr.appendChild(cell(row, "name"));
+            var verdict = document.createElement("td");
+            verdict.className = "wrap";
+            verdict.textContent = reviewVerdict(row.report);
+            tr.appendChild(verdict);
+            tr.appendChild(cell(row.report, "reason", "wrap"));
+            return tr;
+          });
+        }
+
+        function heading(titleText) {
+          var node = document.createElement("h2");
+          node.textContent = titleText;
+          return node;
+        }
+
+        function codeBlock(body) {
+          var node = document.createElement("pre");
+          node.textContent = body;
+          return node;
+        }
+
+        function decide(ticketId, verb, reason, node) {
+          node.disabled = true;
+          var body = reason ? { reason: reason } : {};
+          callEndpoint("POST", "guard/api/tickets/" + encodeURIComponent(ticketId) + "/" + verb, body)
+            .then(function (data) {
+              showNotice(data.message || (verb === "approve" ? "已提交批准。" : "已提交拒绝。"), false);
+              var jobs = [loadTickets(), loadEvents()];
+              if (state.ticketId === ticketId) {
+                jobs.push(loadTicket(ticketId));
+              }
+              return Promise.all(jobs);
+            })
+            .catch(function (error) {
+              showNotice(
+                (verb === "approve" ? "批准未生效：" : "拒绝未生效：") + error.message,
+                true
+              );
+            })
+            .then(function () {
+              node.disabled = false;
+            });
+        }
+
+        el("btn-search").addEventListener("click", function () {
+          loadEvents();
+        });
+        el("btn-tickets").addEventListener("click", function () {
+          loadTickets();
+        });
+
+        if (bridge && typeof bridge.ready === "function") {
+          bridge.ready().catch(function () {
+            /* 上下文只在 dashboard 内可用；失败时按未登录处理。 */
+          });
+        }
+        loadStatus();
+        loadTickets();
+        loadEvents();
+      })();
+    </script>
+  </body>
+</html>

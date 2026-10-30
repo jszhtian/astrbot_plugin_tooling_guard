@@ -1,0 +1,1 @@
+"""Trajectory and taint contracts."""

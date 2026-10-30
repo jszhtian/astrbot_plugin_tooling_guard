@@ -1,0 +1,1 @@
+"""Administrator notification contracts."""

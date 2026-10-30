@@ -1,0 +1,40 @@
+# --- 凭据与本地配置（**不要提交**）---
+# 网关配置副本里有 AstrBot API Key、jev api_key、管理员 QQ 号
+astrbot_plugin_tooling_guard_config.json
+config.json
+*.secret
+.env
+.env.*
+!.env.example
+
+# 审计库与运行时数据
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+data/
+
+# 日志与诊断包
+*.log
+astrbot-diagnostics-*.zip
+
+# 发布产物（由 make_zip.py 生成）
+astrbot_plugin_tooling_guard-*.zip
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- 编辑器 / 系统 ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
