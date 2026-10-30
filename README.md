@@ -182,5 +182,3 @@ py -3 tests/verify_066.py
 > `ARCHITECTURE.md` 里提到的 `openspec/`、`tests/unit`、`tests/e2e` 属于上游开发树，不在本仓库内；
 > 其中的行号锚点只在核对当时成立，定位请以符号名为准。
 
-仓库里没有任何凭据：`astrbot_plugin_tooling_guard_config.json`（含 API Key 与管理员账号）、
-审计库 `*.sqlite3`、日志、发布 zip 都在 `.gitignore` 中，请只在本地保留。
