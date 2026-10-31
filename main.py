@@ -59,6 +59,9 @@ class ToolingGuard(Star):
             gateway=self.gateway,
             context=context,
             admins=admins,
+            # Off suppresses only the private notice: the audit row of a side
+            # observation is still written, the call is still not blocked.
+            side_notice_enabled=bool(getattr(config, "side_notice_enabled", True)),
             sender=build_sender(
                 context,
                 platform_id=platform_from_admins(admins),

@@ -233,6 +233,13 @@ class GatewayConfig:
     #: says -- a stripped tool is gone for that request, leaves no audit row and
     #: gets no judgement at all.
     strip_unmanaged_tools: bool = False
+    #: Whether an observed call outside the managed path also sends the
+    #: administrator one private notice ("[工具网关] 未纳管侧的工具调用已被观察").
+    #: Off suppresses the notice only: the audit row is still written, the
+    #: observation still counts, and nothing about the judgement changes.  A
+    #: scheduled (cron) wake-up produces one notice per tool call, which is
+    #: what an operator who reads the audit trail anyway wants to switch off.
+    side_notice_enabled: bool = True
     #: Dashboard usernames allowed to approve or deny on the web card.  Empty
     #: means nobody may approve there -- never "everybody", and never a widening
     #: of the command plane's own admins.
@@ -688,6 +695,10 @@ def validate_config(raw: Mapping[str, object]) -> ConfigValidationResult:
         )
 
     inline_reply = boolean("inline_reply")
+    # Absent key keeps the shipped behaviour: the notice is on.  A notice
+    # costs the operator nothing but attention, and a side call is exactly
+    # the fact that never reaches the ordinary verdict path.
+    side_notice_enabled = boolean("side_notice_enabled", default=True)
     deep_analysis_timeout_s = _bounded_int(raw, "deep_analysis_timeout_s", 60, issue)
     shingle_k = _bounded_int(raw, "shingle_k", 5, issue)
     shingle_min_chars = _bounded_int(raw, "shingle_min_chars", 24, issue)
@@ -785,6 +796,7 @@ def validate_config(raw: Mapping[str, object]) -> ConfigValidationResult:
         base_check_enabled=base_check_enabled,
         trust_project_roots=trust_project_roots,
         strip_unmanaged_tools=strip_unmanaged_tools,
+        side_notice_enabled=side_notice_enabled,
         web_admin_usernames=tuple(web_admin_usernames),
         web_subject_map=tuple(web_subject_map),
         jev_enabled=jev_enabled,

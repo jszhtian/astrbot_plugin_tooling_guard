@@ -134,6 +134,15 @@ five seconds is abandoned and marked on the observation rather than allowed to
 stall the call.
 """
 
+SIDE_NOTICE_DISABLED_REASON = "side_notice_disabled"
+"""Why no administrator notice was sent: the switch is off.
+
+Requirement: Unmanaged Side Sources.  ``side_notice_enabled=false`` suppresses
+the private notice only.  The audit row is written exactly as before, so an
+operator who reads the trail on purpose stops being paged per call -- a cron
+wake-up produces one notice for every tool call it makes.
+"""
+
 STORE_FAILED_REASON = "audit_store_unavailable"
 """Degradation marker kept when the audit row of an observation was not written.
 
@@ -457,6 +466,9 @@ class SideObserver:
         anonymizer: Central anonymizer, overriding the gateway one.
         limiter: Rate limiter, replacing the default one.
         clock: Callable returning wall-clock seconds.
+        side_notice_enabled: Whether an observed call also sends the private
+            administrator notice.  False suppresses the notice only; the audit
+            row is still written and nothing about a judgement changes.
     """
 
     def __init__(
@@ -469,6 +481,7 @@ class SideObserver:
         anonymizer: Any = None,
         limiter: NotifyRateLimiter | None = None,
         clock: Any = None,
+        side_notice_enabled: bool = True,
     ) -> None:
         self._gateway = gateway
         self._context = context
@@ -481,6 +494,7 @@ class SideObserver:
         )
         self._limiter = NotifyRateLimiter() if limiter is None else limiter
         self._clock = time.time if clock is None else clock
+        self._side_notice_enabled = bool(side_notice_enabled)
         self._worker_key = 0
         self._worker_ok = False
 
@@ -660,6 +674,9 @@ class SideObserver:
             abandoned rather than awaited: the row is already stored, so the
             notice is best effort and the call must not wait for it.
         """
+        if not self._side_notice_enabled:
+            observation.skipped = SIDE_NOTICE_DISABLED_REASON
+            return observation
         if self._context is None or not self._admins:
             observation.skipped = "no admin configured"
             return observation
@@ -777,6 +794,7 @@ __all__ = [
     "KIND_UNPROXIED",
     "PROXY_MARKER",
     "SOURCE_UNMANAGED_SIDE_OBSERVATION",
+    "SIDE_NOTICE_DISABLED_REASON",
     "STORE_FAILED_REASON",
     "SUMMARY_LIMIT",
     "Observation",

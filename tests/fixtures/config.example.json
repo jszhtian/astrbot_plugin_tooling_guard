@@ -17,6 +17,7 @@
   "destination_allowlist": [],
   "exempt_tools": [],
   "strip_unmanaged_tools": false,
+  "side_notice_enabled": true,
   "jev_enabled": false,
   "jev_base_url": "http://127.0.0.1:11434/v1/systemone",
   "jev_model": "nimble",

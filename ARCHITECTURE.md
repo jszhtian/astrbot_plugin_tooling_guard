@@ -138,7 +138,13 @@ astrbot_plugin_tooling_guard/
 `deep_analysis_timeout_s`（默认 60s，上限 60）给深审，深审实际预算取 `min(配置, 总预算剩余 - 30s)`。
 超预算或轮内异常不再硬拒，而是按「没有结论」问人（observe 下只记 `would_be`）。
 
-0.6.1 / 0.6.2 / 0.6.4 / 0.6.6 / 0.6.7 / 0.6.8 增量（不改判决表，只补证据、去噪、投递可靠性、历史输入与序列强审、归因）：
+0.6.1 / 0.6.2 / 0.6.4 / 0.6.6 / 0.6.7 / 0.6.8 / 0.6.9 增量（不改判决表，只补证据、去噪、投递可靠性、历史输入与序列强审、归因、通知开关）：
+
+- **0.6.9：未纳管侧通知有开关**。`observation.SideObserver.alert` 是最外层出口，`side_notice_enabled`
+  （`policy/config.py` 的 `GatewayConfig` 字段，validate 用 `boolean("side_notice_enabled", default=True)`，
+  `main.py` 建 observer 时用 `getattr(config, "side_notice_enabled", True)` 传入）为假时在发信之前返回，
+  在 observation 上留 `skipped=SIDE_NOTICE_DISABLED_REASON`（`"side_notice_disabled"`）。`record` / `observe`
+  不读这个开关：审计行与观测计数一字不改，判决表、票据、放行都不受影响。
 
 - **0.6.8：归因也要出现在回执里**。0.6.7 把归因写进了审计行、通知与统计，但模型执行者读到的
   `denial_result` 文本仍是 fold 的原句（`目标落在 path_deny 内或不可解析：… [rules=R8]`）。线上实测
