@@ -4894,12 +4894,52 @@ class Gateway:
         """
         return CallOutcome(
             decision=plan.decision.value,
-            text=self._redact(plan.reason),
+            text=self._spoken_reason(plan),
             ticket_id=ticket_id,
             would_be=plan.would_be,
             rule_id=plan.rule_id,
             judge_route=plan.judge_route,
         )
+
+    def _spoken_reason(self, plan: _Plan) -> str:
+        """Return the reason the caller sees, with the deciding stage named.
+
+        Requirement: Verdict Aggregation; Judge Route Audit.
+
+        The reason text is folded with the identifiers of every rule that fired,
+        and an observe rule such as R8 fires on calls it never blocks. A model
+        reading only "[rules=R8]" therefore reports the observer as the cause --
+        observed live: the caller was told the path was refused "by rule R8" and
+        advised to widen a setting that has nothing to do with the refusal. The
+        audit row already carries the layer marker and the attribution block, so
+        the same fact is stated here, once, on the refusal the caller reads.
+
+        Args:
+            plan: The settled plan.
+
+        Returns:
+            The redacted reason, followed by the attribution when a stage
+            decided the call and None when the reason was empty.
+        """
+        text = self._redact(plan.reason)
+        if is_allow(plan.decision) or not text:
+            return text
+        attribution = _attribution(plan)
+        parts = [
+            str(attribution.get("stage") or ""),
+            str(attribution.get("layer") or ""),
+        ]
+        marker = "/".join(part for part in parts if part)
+        if not marker:
+            return text
+        suffix = f"（归因 {marker}"
+        rules = [
+            str(item) for item in attribution.get("rule_ids") or () if str(item)
+        ]
+        if rules:
+            suffix += f"；规则号 {','.join(rules)} 只是证据，不是原因"
+        suffix += "）"
+        return f"{text}{suffix}"
 
     def _deny(
         self, reason: str, *, decision: Decision = Decision.DENY_POLICY
