@@ -26,11 +26,12 @@ it is rate limited per administrator like every other command-side side effect
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import sqlite3
 import time
 from collections import OrderedDict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,6 +48,13 @@ from .contracts import FastJudgeStatus, GatewayStatus, StartupSweepView, TicketV
 
 _LOGGER = logging.getLogger("tooling_guard")
 """Logger for the failures a reply must not echo verbatim."""
+
+#: Marker prefix the gateway writes on an audit summary line to carry the policy
+#: layer a verdict came from. The audit table has no layer column and its
+#: rule_id column is evidence -- an observe rule such as R8 fires on calls it
+#: never blocks -- so this marker, and the attribution block of summary_json,
+#: are where the cause of a row is recorded.
+_LAYER_MARKER = "layer="
 
 __all__ = [
     "RECOVERY_WINDOW_S",
@@ -647,6 +655,41 @@ def _ticket_status_reply(gateway: Any, args: Sequence[str]) -> str:
     )
 
 
+def _row_layer(row: Mapping[str, Any]) -> str:
+    """Return the policy layer a stored audit row was attributed to.
+
+    Requirement: Operator Introspection. The attribution lives in the
+    attribution block of summary_json, and on the summary line as a layer=
+    marker; the rule_id column is evidence only, so it is never read here.
+    Rows written before the attribution block existed carry neither and
+    simply do not count.
+
+    Args:
+        row: One stored audit row.
+
+    Returns:
+        The layer name, empty when the row carries none.
+    """
+    raw = row.get("summary_json")
+    if isinstance(raw, str) and raw:
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, Mapping):
+            block = payload.get("attribution")
+            if isinstance(block, Mapping):
+                layer = block.get("layer")
+                if isinstance(layer, str) and layer:
+                    return layer
+    line = row.get("summary_line")
+    if isinstance(line, str):
+        for token in line.split():
+            if token.startswith(_LAYER_MARKER):
+                return token[len(_LAYER_MARKER) :]
+    return ""
+
+
 def _stats_reply(gateway: Any, args: Sequence[str] = ()) -> str:
     """Summarize audit decisions for one window plus pending tickets.
 
@@ -682,6 +725,7 @@ def _stats_reply(gateway: Any, args: Sequence[str] = ()) -> str:
     ]
     decisions: dict[str, int] = {}
     rules: dict[str, int] = {}
+    layers: dict[str, int] = {}
     routes: dict[str, int] = {}
     for row in counted:
         name = str(row.get("decision") or "?")
@@ -689,6 +733,9 @@ def _stats_reply(gateway: Any, args: Sequence[str] = ()) -> str:
         rule = row.get("rule_id")
         if rule:
             rules[str(rule)] = rules.get(str(rule), 0) + 1
+        layer = _row_layer(row)
+        if layer:
+            layers[layer] = layers.get(layer, 0) + 1
         route = row.get("judge_route")
         label = str(route) if route else UNJUDGED_LABEL
         routes[label] = routes.get(label, 0) + 1
@@ -698,9 +745,18 @@ def _stats_reply(gateway: Any, args: Sequence[str] = ()) -> str:
         f"窗口 {window}：审计 {len(counted)} 条（扫最近 {STATS_SCAN_LIMIT}，库内 {total}）",
         "各 decision 计数：" + (_format_counts(decisions) or "无"),
     ]
-    if rules:
+    if layers:
         lines.append(
-            f"rule_id Top{TOP_RULE_LIMIT}："
+            f"归因层 Top{TOP_RULE_LIMIT}："
+            + _format_counts(layers, limit=TOP_RULE_LIMIT)
+        )
+    if rules:
+        # The rule word is kept, but labelled: it says what fired, and an
+        # observe rule fires on calls it never blocks, so a reader who counts
+        # these as decisions blames an observer. The layer line above is the
+        # attribution.
+        lines.append(
+            f"命中规则 Top{TOP_RULE_LIMIT}（证据，非归因）："
             + _format_counts(rules, limit=TOP_RULE_LIMIT)
         )
     lines.append("judge_route 计数：" + (_format_counts(routes) or "无"))

@@ -52,6 +52,16 @@
   快审说「可以放行」也照样送。深审说拒绝 → 开「模型审查拒绝了这个调用」的票问你；深审也弃权 → 快审那张
   放行票仍然有效（一票放行）。想让它变成硬拒，就把那些路径写进 `path_deny` / 用户黑名单。
 
+- **归因看层级，不看规则号**（0.6.7）：审计行的 `rule_id` 是「第一个命中的规则」，而 observe 类规则
+  （R8 目录列举、R4 编码执行）命中并不拦人，拿它当拒绝原因就会把账算到观察者头上。每次判定现在另带一个
+  归因层（`summary_json.attribution`，含 stage / layer / source；summary_line 尾部另有 `layer=<层>` 标记），
+  `rule_ids` 同时标成 `evidence`。通知里先写「归因 <层>」再写「命中规则」，统计先给「归因层 Top」再给
+  「命中规则 Top（证据，非归因）」。
+- **路径目标必须是盘符或 UNC 形态**（0.6.7）：重定向符是从命令文本里读出来的，所以 python 里的比较运算
+  `where ts > '2026-10-30T19'` 曾被读成「把输出写到 2026-10-30T19」，那个碎片进了 targets，再被 `path_deny`
+  判一次。现在只有写成盘符/UNC 的 token 才算路径目标；相对写目标（`> out.txt`）仍留在 `write_targets` 里
+  供写入类规则使用，只是不再进 denylist 的判定集合。
+
 ## 2. 最少要配什么才能用
 
 - **`mode`**：默认 `observe`（只审计）。要真拦就改 `enforce`。
@@ -176,7 +186,7 @@ py -3 tests/verify_066.py
 ```
 
 每个脚本末行打印 `ALL CHECKS PASSED` 即通过；覆盖范围见 `tests/README.md`。
-打发布包：`py -3 tests/make_zip.py 0.6.6`。
+打发布包：`py -3 tests/make_zip.py 0.6.7`。
 
 > 本仓库只随附运行时代码、插件清单、Web 页面与 `tests/` 离线断言。`AGENTS.md` /
 > `ARCHITECTURE.md` 里提到的 `openspec/`、`tests/unit`、`tests/e2e` 属于上游开发树，不在本仓库内；

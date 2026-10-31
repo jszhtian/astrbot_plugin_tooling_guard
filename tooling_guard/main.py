@@ -64,6 +64,7 @@ from .notify.messages import (
 from .notify.ratelimit import NotifyRateLimiter
 from .notify.sender import build_sender, delivery_attempts, platform_from_admins
 from .policy import paths
+from .policy.layers import LAYER_STATIC_PASS, LAYER_WHITELIST
 from .policy.allowlists import (
     SECRET_SCAN_INCOMPLETE,
     scan_secret_patterns,
@@ -89,12 +90,14 @@ from .reviewers._common import (
     DETAIL_CONSULTED,
     DETAIL_FOLD,
     DETAIL_LABELS,
+    DETAIL_LAYER,
     DETAIL_REASON,
     DETAIL_NOTE,
     DETAIL_RULE_IDS,
     DETAIL_SCORE,
     DETAIL_SEVERITY,
     DETAIL_SKIPPED,
+    DETAIL_SOURCE,
     DETAIL_WOULD_BE,
     SKIP_WHITELISTED,
 )
@@ -252,6 +255,10 @@ INTENT_UNPAIRED = intent_trace.UNPAIRED_REASON
 DEEP_CACHE_HIT = "deep_cache=hit"
 #: Audit marker prefix that carries a call's degradation reason on its line.
 DEGRADED_MARKER_PREFIX = "degraded="
+#: Audit marker prefix that carries the policy layer a verdict came from. The
+#: row has no layer column and its rule_id column is evidence, so the line is
+#: where a reader -- and a grep -- finds the attribution of a decision.
+ATTRIBUTION_MARKER_PREFIX = "layer="
 #: Call body the marker tail must leave; under it the cache-hit marker is shed.
 SUMMARY_MARKER_BODY_MIN = 12
 #: Audit marker of a summary line whose text the redactor scanned only in part.
@@ -689,6 +696,15 @@ class _Plan:
     judge_route: str | None = None
     degraded: str | None = None
     labels: tuple[str, ...] = ()
+    #: The policy layer that produced this verdict (deny_path, sensitive_config,
+    #: whitelist, static_pass, ...), read back from the fold the reviewer
+    #: published. It is the attribution of the decision: the rule identifiers on
+    #: the same fold are evidence -- an observe rule fires on calls it never
+    #: blocks -- so a report names this layer, never a rule identifier alone.
+    layer: str = ""
+    #: The policy source word behind `layer` (deny, suspend, whitelist,
+    #: static_pass). Published next to it so a reader keeps the two apart.
+    source: str = ""
     call_id: str | None = None
     intent_unpaired: bool = False
     severity: str | None = None
@@ -3624,6 +3640,8 @@ class Gateway:
                 judge_route=self._judge_route_of(verdicts),
                 degraded=_outcome_degraded(outcome),
                 labels=_fold_labels(fold),
+                layer=_fold_text(fold, DETAIL_LAYER),
+                source=_fold_text(fold, DETAIL_SOURCE),
                 severity=_fold_text(fold, DETAIL_SEVERITY) or None,
                 force_deep=forced,
                 ticket_kind=folded.ticket_kind,
@@ -4208,6 +4226,11 @@ class Gateway:
                     "session_key": session,
                     "decision": plan.decision.value,
                     "rule_ids": [] if plan.rule_id is None else [plan.rule_id],
+                    # Requirement: Verdict Aggregation.  The notice names the
+                    # layer that decided; the rule identifiers stay next to it
+                    # as evidence, because an observe rule fires on calls it
+                    # never blocks and a reader would take it for the cause.
+                    "layer": plan.layer,
                     "arguments": args,
                     "remaining_s": self._announced_remaining(deadline),
                     # The notice names the coarse verb and tier instead of
@@ -5044,7 +5067,8 @@ class Gateway:
             "labels": ",".join(sorted(record.labels)) or None,
             "delegated": record.delegated,
             "summary_json": json.dumps(
-                _reviewed_record_dict(record, plan.review), ensure_ascii=False
+                _reviewed_record_dict(record, plan.review, _attribution(plan)),
+                ensure_ascii=False,
             ),
         }
         writer.submit(event)
@@ -5144,6 +5168,15 @@ class Gateway:
         reason = _degraded_marker(plan)
         if reason and reason not in markers:
             markers.append(reason)
+        # Requirement: Verdict Aggregation.  The row's rule_id column is
+        # evidence, not attribution, and an observe rule fires on calls it never
+        # blocks; the layer marker is what a reader greps to find why the row is
+        # there.  It is derived from the plan alone, like every other marker.
+        layer = str(getattr(plan, "layer", "") or "").strip()
+        if layer:
+            marker = f"{ATTRIBUTION_MARKER_PREFIX}{layer}"
+            if marker not in markers:
+                markers.append(marker)
         incomplete = _scan_incomplete_code(plan)
         if incomplete:
             marker = f"{DEGRADED_MARKER_PREFIX}{incomplete}"
@@ -5563,6 +5596,14 @@ class Gateway:
             labels = _verdict_detail(verdict, DETAIL_LABELS)
             if labels:
                 entry["labels"] = [str(item) for item in labels]
+            # Requirement: Verdict Aggregation.  The layer the reviewer read is
+            # attribution; the rule identifiers it saw are evidence.  Both ride
+            # here so an approval page can say which stage denied a call instead
+            # of leaving the reader to infer it from a rule word.
+            for key in (DETAIL_LAYER, DETAIL_SOURCE):
+                value = _verdict_detail(verdict, key)
+                if value:
+                    entry[key] = str(value)
             for key in (DETAIL_SCORE, DETAIL_CONFIDENCE, DETAIL_NOTE):
                 value = _verdict_detail(verdict, key)
                 if value is not None and value != "":
@@ -6243,19 +6284,172 @@ def _fold_labels(fold: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(str(item) for item in published))
 
 
+#: Stage words of the attribution block. A decision is attributed to the stage
+#: that took it -- the static layer, the rules, one of the two models, the
+#: consensus vote, or the gateway's own budget -- never to a rule identifier.
+STAGE_STATIC: Final[str] = "static"
+STAGE_RULES: Final[str] = "rules"
+STAGE_JEV: Final[str] = "jev"
+STAGE_DEEP: Final[str] = "deep"
+STAGE_CONSENSUS: Final[str] = "consensus"
+STAGE_GATEWAY: Final[str] = "gateway"
+
+#: Decisions the gateway itself produces, so no reviewer is the author of them.
+_GATEWAY_DECISIONS: Final[frozenset[Decision]] = frozenset(
+    {
+        Decision.TIMEOUT_DENY,
+        Decision.DENIED_NO_WRAPPER,
+        Decision.CANCELED_EXTERNAL,
+    }
+)
+
+#: Reviewer names whose own verdict word identifies the model stage, in the
+#: order the consensus folds them.
+_MODEL_STAGES: Final[tuple[tuple[str, str], ...]] = (
+    (JEV_FAST_NAME, STAGE_JEV),
+    (DEEP_REVIEWER_NAME, STAGE_DEEP),
+)
+
+
+def _attribution(plan: Any) -> dict[str, Any]:
+    """Return the attribution block of one decision, for summary_json.
+
+    Requirement: Verdict Aggregation; Judge Route Audit.
+
+    The audit row keeps a rule_id column -- the first rule that fired -- and the
+    fold keeps every rule that fired. Both are evidence: an observe rule such as
+    R8 fires on calls it never blocks, so a report that reads rule_id as the
+    cause of a denial blames an observer. The cause is a stage, so this block
+    names the stage from the decision word and the policy layer behind it, and
+    marks the rule identifiers as evidence so a reader cannot mistake them.
+
+    Args:
+        plan: The plan the audit row is written for.
+
+    Returns:
+        The attribution block: stage, layer, source, the rule identifiers with
+        their evidence role, and the ticket kind when a human is asked.
+    """
+    layer = str(getattr(plan, "layer", "") or "").strip()
+    source = str(getattr(plan, "source", "") or "").strip()
+    decision = getattr(plan, "decision", None)
+    rule_id = getattr(plan, "rule_id", None)
+    block: dict[str, Any] = {
+        "stage": _attribution_stage(plan, decision, layer),
+        "layer": layer,
+        "source": source,
+        "rule_ids": [] if rule_id is None else [str(rule_id)],
+        # The word a report must not read as the cause: a rule identifier on
+        # this row says what fired, never what decided.
+        "rule_ids_role": "evidence",
+    }
+    would_be = getattr(plan, "would_be", None)
+    if would_be:
+        block["would_be"] = _value_word(would_be)
+    kind = getattr(plan, "ticket_kind", None)
+    if kind:
+        block["ticket_kind"] = _value_word(kind)
+    return block
+
+
+def _value_word(value: Any) -> str:
+    """Return the stored word of one enum or word value.
+
+    A str-mixin enum prints as "WouldBe.SUSPEND", which is not the word the
+    column vocabulary uses, so the value is read first and the printable form
+    is only the fallback.
+
+    Args:
+        value: An enum member, a string or anything with a printable form.
+
+    Returns:
+        The vocabulary word.
+    """
+    word = getattr(value, "value", None)
+    if isinstance(word, str) and word:
+        return word
+    return str(value)
+
+
+def _attribution_stage(plan: Any, decision: Any, layer: str) -> str:
+    """Return the stage word that decided one call.
+
+    Args:
+        plan: The plan the audit row is written for.
+        decision: Its decision word.
+        layer: The policy layer the fold named, empty when it named none.
+
+    Returns:
+        One of the STAGE_* words.
+    """
+    if decision in _GATEWAY_DECISIONS:
+        return STAGE_GATEWAY
+    if decision in (Decision.DENY_POLICY, Decision.DENY_REQUESTER):
+        return STAGE_STATIC
+    if decision is Decision.DENY_RULE:
+        return STAGE_RULES
+    if decision in (Decision.DENY_JUDGE, Decision.SUSPENDED):
+        # A model denial is not a hard refusal, so it reaches the store as a
+        # suspension; the reviewer's own word still says which model said it.
+        return _model_stage_of(plan) or STAGE_CONSENSUS
+    if getattr(plan, "would_be", None):
+        # Observe mode records what a stage would have done; the stage that
+        # would have acted is the attribution, not the rewrite of the word.
+        return STAGE_CONSENSUS
+    if layer in (LAYER_WHITELIST, LAYER_STATIC_PASS):
+        return STAGE_STATIC
+    return STAGE_CONSENSUS
+
+
+def _model_stage_of(plan: Any) -> str:
+    """Return the model stage whose own verdict word denied the call.
+
+    A model denial keeps the reviewer's word on the review report, so the stage
+    is read from the reviewer rather than guessed from the decision, which is
+    the same word for both models.
+
+    Args:
+        plan: The plan carrying the review report.
+
+    Returns:
+        STAGE_JEV or STAGE_DEEP, empty when neither model denied the call.
+    """
+    review = getattr(plan, "review", None)
+    if not isinstance(review, Mapping):
+        return ""
+    denied = Decision.DENY_JUDGE.value
+    for name, stage in _MODEL_STAGES:
+        entry = review.get(name)
+        if isinstance(entry, Mapping) and str(entry.get("decision") or "") == denied:
+            return stage
+    return ""
+
+
 def _reviewed_record_dict(
-    record: CallSummary, review: Mapping[str, Any] | None
+    record: CallSummary,
+    review: Mapping[str, Any] | None,
+    attribution: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the trajectory record plus the per-reviewer account, when there is one.
 
-    Requirement: Trajectory Summary Record; Layered Consensus. The 22 spec keys
-    stay exactly as they are and the reviewer account is one extra key, so a
-    reader of summary_json still finds the record where the specification puts
-    it, and an approval page finds the evidence next to it.
+    Requirement: Trajectory Summary Record; Layered Consensus; Verdict
+    Aggregation. The 22 spec keys stay exactly as they are, and the reviewer
+    account and the attribution block are extra keys, so a reader of
+    summary_json still finds the record where the specification puts it, and an
+    approval page finds the evidence next to it.
+
+    The attribution block exists because a rule identifier is not an
+    attribution. The audit row keeps its rule_id column -- it is the first rule
+    that fired, and it is evidence -- but an observe rule such as R8 fires on
+    calls it never blocks, so a report that reads rule_id as \"what denied this
+    call\" blames the observer. The block names the stage and the policy layer
+    that actually decided, and marks the rule identifiers as evidence.
     """
     payload = _record_dict(record)
     if review:
         payload["review"] = dict(review)
+    if attribution:
+        payload["attribution"] = dict(attribution)
     return payload
 
 

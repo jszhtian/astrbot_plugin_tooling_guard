@@ -62,6 +62,12 @@ EVENT_FIELDS: tuple[str, ...] = (
 #: Event fields that may quote call text, so they are redacted before output.
 EVENT_TEXT_FIELDS = frozenset({"summary_line"})
 
+#: Marker prefix the gateway writes on an audit summary line to carry the policy
+#: layer a verdict came from. The table has no layer column, and its rule_id
+#: column is evidence -- an observe rule such as R8 fires on calls it never
+#: blocks -- so the wire form derives the attribution from this marker.
+LAYER_MARKER = "layer="
+
 #: Longest argument head the approval panel shows; matches trace/summary.py.
 ARGS_HEAD_LIMIT = 512
 
@@ -80,7 +86,19 @@ CONTEXT_TEXT_KEYS: tuple[tuple[str, str], ...] = (
 CONTEXT_LIST_KEYS: tuple[str, ...] = ("targets", "rule_hits", "labels")
 
 #: Reviewer verdict fields the approval panel shows, in reading order.
-REVIEW_FIELDS: tuple[str, ...] = ("outcome", "decision", "score", "confidence", "note", "skipped", "degraded")
+REVIEW_FIELDS: tuple[str, ...] = (
+    "outcome",
+    "decision",
+    "score",
+    "confidence",
+    "note",
+    "skipped",
+    "degraded",
+    # The layer each reviewer read, so the approval panel says which stage
+    # produced a verdict instead of leaving it to be inferred from a rule word.
+    "layer",
+    "source",
+)
 
 #: Ticket fields a response may carry.
 TICKET_FIELDS: tuple[str, ...] = (
@@ -380,9 +398,15 @@ def _redacted(gateway: Any, value: Any, limit: int = FIELD_LIMIT) -> str | None:
 def serialize_event(gateway: Any, row: Mapping[str, Any]) -> dict[str, Any]:
     """Return one audit row as the browser may see it.
 
-    Requirement: Read Filtering; Audit Trail. Only whitelisted columns are
-    copied, so no argument text, argument digest or trajectory JSON can leak;
-    the free-text column is redacted before it leaves the process.
+    Requirement: Read Filtering; Audit Trail; Verdict Aggregation. Only
+    whitelisted columns are copied, so no argument text, argument digest or
+    trajectory JSON can leak; the free-text column is redacted before it leaves
+    the process.
+
+    The wire form also carries the policy layer behind the verdict, read from
+    the marker the summary line already holds: rule_id travels as evidence, and
+    a browser that grouped rows by it would count the observing rules as
+    causes.
 
     Args:
         gateway: Gateway owning the anonymizer.
@@ -401,7 +425,28 @@ def serialize_event(gateway: Any, row: Mapping[str, Any]) -> dict[str, Any]:
             event[name] = _redacted(gateway, row.get(name))
         else:
             event[name] = _text(row.get(name))
+    event["layer"] = _layer_marker(event.get("summary_line"))
     return event
+
+
+def _layer_marker(line: Any) -> str | None:
+    """Return the layer marker of one audit summary line.
+
+    Args:
+        line: The redacted summary line of a row.
+
+    Returns:
+        The layer name, None when the row carries no marker.
+    """
+    text = _text(line)
+    if not text:
+        return None
+    # The marker rides the reserved tail, so a token the argument text happens to
+    # contain earlier in the line must lose to the one the gateway appended.
+    for token in reversed(text.split()):
+        if token.startswith(LAYER_MARKER):
+            return _text(token[len(LAYER_MARKER) :], 32)
+    return None
 
 
 def _summary_of(row: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -657,6 +702,7 @@ __all__ = [
     "parse_event_filters",
     "parse_instant",
     "read_events",
+    "LAYER_MARKER",
     "resolve_scope",
     "serialize_event",
     "serialize_fast_judge",

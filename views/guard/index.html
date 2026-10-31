@@ -372,12 +372,15 @@
               }
               host.appendChild(
                 table(
-                  ["时间", "决定", "规则", "工具", "主体", "票据", "摘要"],
+                  ["时间", "决定", "归因层", "规则（证据）", "工具", "主体", "票据", "摘要"],
                   state.events,
                   function (row) {
                     var tr = document.createElement("tr");
                     tr.appendChild(cell(row, "ts"));
                     tr.appendChild(cell(row, "decision"));
+                    // The layer is the attribution; rule_id only says what
+                    // fired, and an observe rule fires on calls it never blocks.
+                    tr.appendChild(cell(row, "layer"));
                     tr.appendChild(cell(row, "rule_id"));
                     tr.appendChild(cell(row, "tool_name"));
                     tr.appendChild(cell(row, "subject_key"));
@@ -448,10 +451,11 @@
               if (auditRows.length) {
                 host.appendChild(heading("相关审计行"));
                 host.appendChild(
-                  table(["时间", "决定", "规则", "摘要"], auditRows, function (row) {
+                  table(["时间", "决定", "归因层", "规则（证据）", "摘要"], auditRows, function (row) {
                     var tr = document.createElement("tr");
                     tr.appendChild(cell(row, "ts"));
                     tr.appendChild(cell(row, "decision"));
+                    tr.appendChild(cell(row, "layer"));
                     tr.appendChild(cell(row, "rule_id"));
                     tr.appendChild(cell(row, "summary_line", "wrap"));
                     return tr;

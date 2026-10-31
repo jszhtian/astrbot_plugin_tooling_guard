@@ -91,6 +91,9 @@ DETAIL_CONFIDENCE: Final[str] = "confidence"
 DETAIL_NOTE: Final[str] = "note"
 DETAIL_SEVERITY: Final[str] = "severity"
 DETAIL_SKIPPED: Final[str] = "skipped"
+#: The policy source word behind DETAIL_LAYER (deny, suspend, whitelist,
+#: static_pass), published inside DETAIL_FOLD next to the layer name.
+DETAIL_SOURCE: Final[str] = "source"
 DETAIL_WOULD_BE: Final[str] = "would_be"
 
 #: Skip words a stage result can carry in Verdict.detail, so an audit row can
@@ -402,6 +405,13 @@ def publish_fold(
     under DETAIL_FOLD. A caller then reports the fold instead of re-deriving one,
     which is what keeps a second, parallel mapping from ever being written.
 
+    The fold also names its own attribution: DETAIL_LAYER is the policy layer
+    that produced the conclusion (deny_path, sensitive_config, whitelist,
+    static_pass) and DETAIL_SOURCE is that layer's word for it. Rule identifiers
+    are published next to them as evidence only -- an observe rule such as R8
+    fires on calls it never blocks -- so a report that attributes a decision to
+    a rule identifier attributes it to the wrong stage.
+
     Publishing is observability and must never change a decision: a fold that
     cannot be computed leaves the verdict exactly as the adapter built it.
 
@@ -429,9 +439,11 @@ def publish_fold(
     detail = dict(verdict.detail)
     detail[DETAIL_FOLD] = {
         DETAIL_LABELS: tuple(sorted(str(item) for item in folded.labels)),
+        DETAIL_LAYER: str(policy.outcome.layer),
         DETAIL_REASON: folded.reason,
         DETAIL_RULE_IDS: list(folded.rule_ids),
         DETAIL_SEVERITY: folded.severity,
+        DETAIL_SOURCE: str(policy.outcome.source),
         DETAIL_WOULD_BE: (
             folded.would_be.value if folded.would_be is not None else None
         ),
@@ -450,14 +462,20 @@ def fail_closed_fold() -> dict[str, Any]:
     DETAIL_FOLD is therefore present on every verdict, which is what lets the
     caller read the fold instead of testing whether one exists.
 
+    The attribution keys are present and empty: a stage that never ran has no
+    layer to name, and a missing key would make every reader test for two shapes
+    of the same fold.
+
     Returns:
         The fold of a failed triage, keyed by the DETAIL_* names.
     """
     return {
         DETAIL_LABELS: (),
+        DETAIL_LAYER: "",
         DETAIL_REASON: REASON_TRIAGE_ERROR,
         DETAIL_RULE_IDS: [],
         DETAIL_SEVERITY: None,
+        DETAIL_SOURCE: "",
         DETAIL_WOULD_BE: None,
     }
 
@@ -690,6 +708,7 @@ __all__ = [
     "DETAIL_SCORE",
     "DETAIL_SEVERITY",
     "DETAIL_SKIPPED",
+    "DETAIL_SOURCE",
     "DETAIL_WOULD_BE",
     "SKIP_NOT_SUSPICIOUS",
     "SKIP_NO_MATCH",

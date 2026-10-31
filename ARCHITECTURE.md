@@ -138,7 +138,25 @@ astrbot_plugin_tooling_guard/
 `deep_analysis_timeout_s`（默认 60s，上限 60）给深审，深审实际预算取 `min(配置, 总预算剩余 - 30s)`。
 超预算或轮内异常不再硬拒，而是按「没有结论」问人（observe 下只记 `would_be`）。
 
-0.6.1 / 0.6.2 / 0.6.4 / 0.6.6 增量（不改判决表，只补证据、去噪、投递可靠性、历史输入与序列强审）：
+0.6.1 / 0.6.2 / 0.6.4 / 0.6.6 / 0.6.7 增量（不改判决表，只补证据、去噪、投递可靠性、历史输入与序列强审、归因）：
+
+- **0.6.7：归因是层，不是规则号**。审计行的 `rule_id` 列记「第一个命中的规则」，而 `RULE_ACTIONS` 里
+  R8 是 `ACTION_OBSERVE`、R4 的同类命中也可能只是标签：拿 `rule_id` 当拒绝原因，报告就会把账算到
+  观察者头上（`reject_after_0300` 那份报告正是如此）。修复沿一条链铺开：`reviewers/_common.publish_fold`
+  在 `DETAIL_FOLD` 里写 `DETAIL_LAYER`/`DETAIL_SOURCE` → `main._plan_from_pipeline` 填 `_Plan.layer/source`
+  → `main._attribution(plan)` 折成 `{stage, layer, source, rule_ids, rule_ids_role="evidence", would_be,
+  ticket_kind}`（stage ∈ static/rules/jev/deep/consensus/gateway，判据是 decision 词加 fold 的 layer：
+  `DENY_POLICY`/`DENY_REQUESTER`→static、`DENY_RULE`→rules、`DENY_JUDGE`/`SUSPENDED`→看哪个 reviewer
+  投了 `deny_judge`、gateway 三态→gateway、observe 的 `would_be`→consensus）→ 审计 `summary_json.attribution`
+  → summary_line 尾部 `layer=<层>` 标记（`ATTRIBUTION_MARKER_PREFIX`，走既有的保留尾部，截断永远砍不到它）
+  → `web/queries.serialize_event` 从标记里取 `layer` 出网（`summary_json` 从不 select）→ `ui/commands._stats_reply`
+  先报「归因层 Top」再报「命中规则 Top（证据，非归因）」→ 通知行「归因 <层> · 命中规则 <规则>」。
+- **0.6.7：路径目标必须是盘符/UNC 形态**。重定向是从命令文本里读出来的（`triage/classify._REDIRECT_RE`），
+  于是 python 里的比较运算 `where ts > '2026-10-30T19'` 被读成重定向目标 `2026-10-30T19`：它进了
+  `classify_call` 的 `targets`，而 `policy/paths.is_path_denied` 对畸形目标判 hazard 即拒，所以这既是显示问题
+  也是判决问题。修复只在该边界上：`_target_values` 用 `_absolute_literal`（内部就是
+  `paths.extract_absolute_paths`，全包只此一份形态定义）过滤 `shell_write_targets` 的产出。
+  `write_targets` 不变，`> out.txt` 这类相对写目标照旧喂 R1/R9。
 
 - **快审中间档不投票**：`jev/score.decide` 在 `allow_score <= score < block_score` 时返回 `None`，`judge_stage`
   的弃权分支仍带 `force_deep`。后果：中间档一定进深审，深审也弃权才落 `ticket_kind=all_abstain`。

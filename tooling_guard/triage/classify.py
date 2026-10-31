@@ -865,13 +865,49 @@ def _values(pairs: tuple[tuple[str, str], ...], keys: frozenset[str]) -> list[st
 
 
 def _target_values(path_values: list[str], texts: tuple[str, ...]) -> list[str]:
-    """Return the path targets of a call, from path keys and command literals."""
+    """Return the path targets of a call, from path keys and command literals.
+
+    Requirement: Path Denylist; Target Extraction for All Tools.
+
+    A redirect operator is read out of command text, so the scan also fires on
+    an operator that is not a redirect at all: the comparison in
+    "where ts > '2026-10-30T19'" yields the fragment 2026-10-30T19, which is
+    not a path and must not be judged as one. Only tokens written in a
+    drive-letter or UNC form therefore join the targets; a relative output name
+    ("&gt; out.txt") stays in write_targets, where the write rules read it, and
+    never here, where the denylist decides.
+
+    Args:
+        path_values: Values of the call's path-shaped arguments.
+        texts: Command, script or content texts of the call.
+
+    Returns:
+        The path targets in first-seen order.
+    """
     found = [value.strip() for value in path_values]
     for text in texts:
         found.extend(paths.extract_absolute_paths(text))
     for text in texts:
-        found.extend(shell_write_targets(text))
+        found.extend(
+            value for value in shell_write_targets(text) if _absolute_literal(value)
+        )
     return [value for value in found if value]
+
+
+def _absolute_literal(value: str) -> bool:
+    """Return whether a token is written as a drive-letter or UNC path.
+
+    Requirement: Path Denylist. paths.extract_absolute_paths is the single
+    definition of that shape in this package, so the gate reuses it instead of
+    keeping a second, drifting regex.
+
+    Args:
+        value: One candidate target.
+
+    Returns:
+        True when the token is an absolute path literal.
+    """
+    return bool(paths.extract_absolute_paths(value))
 
 
 def _sensitive_pattern_targets(

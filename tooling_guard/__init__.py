@@ -1,3 +1,3 @@
 """OpenSpec add-computer-use-tool-gateway package contracts."""
 
-__version__ = "0.6.6"
+__version__ = "0.6.7"

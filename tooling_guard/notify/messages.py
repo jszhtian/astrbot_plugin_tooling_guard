@@ -243,6 +243,13 @@ def render_admin_message(event: Any, *, anonymizer: Any) -> str:
         _pick(event, "decision", "verdict", "would_be", default="suspended")
     )
     rules = _rules_text(redactor, _pick(event, "rule_ids", "rules")) or "无"
+    # Requirement: Verdict Aggregation.  The rule word is evidence only -- an
+    # observe rule fires on calls it never blocks -- so the notice names the
+    # layer that decided first, and the rules after it, labelled.
+    # The layer is a fixed vocabulary word, so anything that is not text (an
+    # attribution block, a number, None) renders as absent instead of as its repr.
+    raw_layer = _pick(event, "layer", default="")
+    layer = raw_layer.strip() if isinstance(raw_layer, str) else ""
     subject = _field(
         redactor, _pick(event, "subject_key", "subject", default="未知主体")
     )
@@ -258,9 +265,10 @@ def render_admin_message(event: Any, *, anonymizer: Any) -> str:
     # Six lines, one decision each: what is held, what it is, what it touches,
     # who it is for, how to answer, and what this gateway does not cover.
     lines = [f"[工具网关] 挂起等待（不是拒绝），等你决定｜票据：{ticket}"]
-    lines.append(
-        f"工具 {tool} · 动作 {verb} · 层级 {tier} · 判定 {decision} · 规则 {rules}"
-    )
+    described = f"工具 {tool} · 动作 {verb} · 层级 {tier} · 判定 {decision}"
+    if layer:
+        described = f"{described} · 归因 {_field(redactor, layer)}"
+    lines.append(f"{described} · 命中规则 {rules}")
     if why:
         lines.append(why)
     if summary:

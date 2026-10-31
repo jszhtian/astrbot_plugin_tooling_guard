@@ -6,7 +6,7 @@ desc: >
   逐次判定放行、拒绝，或挂起等管理员审批。默认 mode=observe 只审计不阻断；要真正
   拦截需切到 enforce，并先配好 admins。覆盖范围仅限这一个钩子：cron、后台唤醒与
   子 agent 内部的工具调用不在其中。详见 README.md。
-version: 0.6.6
+version: 0.6.7
 author: DSH_Work
 repo: ""
 astrbot_version: ">=4.29.3"
