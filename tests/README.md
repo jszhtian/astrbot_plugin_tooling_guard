@@ -19,6 +19,7 @@ py -3 tests/verify_067.py
 py -3 tests/verify_068.py
 py -3 tests/verify_069.py
 py -3 tests/verify_070.py
+py -3 tests/verify_071.py
 ```
 
 每个脚本末行打印 `ALL CHECKS PASSED`，退出码 0 即通过。
@@ -37,6 +38,7 @@ py -3 tests/verify_070.py
 | `verify_067.py` | 归因层（stage/layer/source）、`rule_ids_role=evidence`、路径目标形态收敛 |
 | `verify_068.py` | 回执里的归因句（`_spoken_reason`），放行不加 |
 | `verify_069.py` | 未纳管侧通知开关只停私信，观测与审计不变 |
+| `verify_071.py` | 0.7.2 挂起票据不被限频合并（`pending` 进键）、`notify_merged` 审计行、`/guard notifytest` 命令与闸门、版本与 CHANGELOG |
 | `verify_070.py` | 0.7.0/0.7.1 快审来源与配置页顺序：`verdict_from_decision_answers` 折算与弃权、懒加载 `astrbot.api.provider`、`DecisionJudge`/`ProviderJudge` 调用与超时、`jev_enabled` 优先、来源分派、endpoint 必填条件、配置页顺序（协议与来源在端点之前、端点/模型/密钥相邻）、schema 与版本号 |
 
 `make_zip.py <版本号>` 打发布包（排除 `tests/`、`__pycache__`、`.git`）。

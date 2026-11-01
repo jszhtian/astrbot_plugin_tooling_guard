@@ -110,6 +110,7 @@ def limit_key(
     decision: Any,
     degraded: Any = None,
     ticket_id: Any = None,
+    pending: bool = False,
 ) -> tuple[str, str, str, str, str]:
     """Return the bounded, sanitized key of one alert class.
 
@@ -121,17 +122,24 @@ def limit_key(
         mode: Effective gateway mode.
         decision: Verdict the alert reports.
         degraded: Degradation marker, when the alert is a degraded one.
-        ticket_id: Ticket the alert reports; only an ordinary alert keeps it, so
-            two different pending tickets are never merged into one delivery.
+        ticket_id: Ticket the alert reports; an ordinary alert keeps it, so two
+            different pending tickets are never merged into one delivery.
+        pending: Whether the notice announces a ticket that is still waiting for
+            an administrator. A pending notice keeps its ticket even when it is
+            degraded: the degraded class shares one ten-minute window across
+            every tool of a requester, and a merged-away pending notice is a
+            ticket nobody is told about -- it then times out with no trace that
+            an answer was ever asked for.
 
     Returns:
         A five-part tuple: requester, tool, mode, decision class, ticket.  Every
         part is whitespace-collapsed and capped, so the key holds no raw argument
-        text.  A degraded alert carries an empty ticket part, which keeps its
-        single long-window class intact.
+        text.  A degraded alert that is not pending carries an empty ticket part,
+        which keeps its single long-window class intact.
     """
     alert_class = decision_class(decision, degraded=degraded)
-    ticket = "" if alert_class == DEGRADED_CLASS else _dim(ticket_id)
+    keep_ticket = pending or alert_class != DEGRADED_CLASS
+    ticket = _dim(ticket_id) if keep_ticket else ""
     return (_dim(subject), _dim(tool_name), _dim(mode), alert_class, ticket)
 
 
@@ -250,6 +258,7 @@ class NotifyRateLimiter:
         decision: Any,
         degraded: Any = None,
         ticket_id: Any = None,
+        pending: bool = False,
         now: Any,
     ) -> Admission:
         """Decide whether one alert is delivered now or merged into a later one.
@@ -265,6 +274,10 @@ class NotifyRateLimiter:
             degraded: Degradation marker, when the alert is a degraded one.
             ticket_id: Ticket the alert reports; a different ticket of the same
                 class is delivered instead of being merged away.
+            pending: Whether the ticket is still waiting for an answer. A
+                pending notice is keyed by its ticket even when degraded, so a
+                second request of the same class inside the degraded window
+                still reaches the administrators.
             now: Current instant on the caller's clock.
 
         Returns:
@@ -280,6 +293,7 @@ class NotifyRateLimiter:
             decision=decision,
             degraded=degraded,
             ticket_id=ticket_id,
+            pending=pending,
         )
         self._expire(current)
         entry = self._state.get(key)

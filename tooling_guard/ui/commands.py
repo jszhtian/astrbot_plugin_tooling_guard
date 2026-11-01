@@ -179,11 +179,22 @@ _HELP = """\
   approve <ticket_id>   批准一次（一次性精确消费）
   deny <ticket_id> [原因]  拒绝
   sweep | mode [observe|enforce]  重开批准闸门 / 查看或切换模式
+  notifytest            立刻给管理员发一条测试私信，验证通知通道
 """
 
 _COVERAGE = (
     "  (a) cron/后台唤醒与子 agent 内部调用不经本钩子：看不到也管不到。",
     "  (b) MCP/handoff/后台/未知形态工具被剥离即不可用；挂起最长 110s，超时按拒绝。",
+)
+
+#: Subcommand that sends one test private message through the notice channel.
+NOTIFY_TEST_COMMAND = "notifytest"
+#: Text of that test message. It says what it is, so an administrator who sees it
+#: days later does not mistake it for a ticket somebody has to answer.
+NOTIFY_TEST_TEXT = (
+    "[工具网关] 通知通道测试：这条私信由 /guard notifytest 触发，"
+    "不代表任何工具调用被挂起，也没有票据需要处理。"
+    "收到即说明挂起通知与其它告警可以送达这个账号。"
 )
 
 
@@ -288,6 +299,8 @@ async def handle_command(
             anonymizer,
         )
     note = _sweep_note(gateway, actor)
+    if command.name == NOTIFY_TEST_COMMAND:
+        return finalize_reply(note + await _notify_test_reply(gateway, event), anonymizer)
     try:
         reply = _dispatch(command, gateway, actor, event, registry)
     except Exception as exc:  # noqa: BLE001 - a command never reaches the loop
@@ -383,6 +396,50 @@ def _dispatch(
     if command.name == "mode":
         return _mode_reply(gateway, command.args, actor)
     return f"未知子命令：{command.name}\n{_HELP}"
+
+
+async def _notify_test_reply(gateway: Any, event: Any) -> str:
+    """Send one test notice through the delivery boundary and report the result.
+
+    Requirement: Administrator Channel; Notification Delivery Failure. The
+    delivery path is the one the suspension notice uses, so a test that arrives
+    proves the real notices can arrive, and one that does not names the reason
+    instead of leaving "I never got a message" unexplained.
+
+    Args:
+        gateway: Gateway owning the admins allowlist and the delivery boundary.
+        event: Host message event the command arrived on.
+
+    Returns:
+        Reply text naming the recipients and what the host answered.
+    """
+    admins = _admin_entries(gateway)
+    if not admins:
+        return "未配置 admins：没有收件人，通知通道不可用。"
+    send = getattr(gateway, "_send_notice", None)
+    if not callable(send):
+        return "网关没有通知边界（_send_notice 不可用），无法测试。"
+    recipients = ", ".join(admins)
+    try:
+        reached = await send(
+            NOTIFY_TEST_TEXT,
+            admins=admins,
+            context=getattr(gateway, "_context", None),
+            event=event,
+            redact=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - a command never reaches the loop
+        return f"测试通知发送出错（{type(exc).__name__}）。收件人：{recipients}。"
+    if not reached:
+        return (
+            f"宿主没有接受这条测试通知。收件人：{recipients}。"
+            "请确认 admins 的平台前缀与宿主正在运行的平台 id 一致（/guard whoami 能给出现用平台）。"
+        )
+    return (
+        f"测试通知已交给宿主，宿主返回成功。收件人：{recipients}。"
+        "宿主对没有会话的地址也会回成功，所以只有私信真的到了才算通；"
+        "没收到时先确认这个 QQ 号是 bot 的私聊好友，且 admins 的平台前缀正确。"
+    )
 
 
 def read_reviewer_statuses(gateway: Any) -> tuple[ReviewerStatus, ...]:

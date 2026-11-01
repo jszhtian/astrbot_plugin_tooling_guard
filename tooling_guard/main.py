@@ -230,6 +230,10 @@ NOTIFY_FAILED = "notify_failed"
 #: origin the notice was addressed to, so "the administrator saw nothing" can be
 #: settled from the audit table instead of from the host's optimistic boolean.
 NOTIFY_SENT = "notify_sent"
+#: Audit marker of a notice the rate limiter folded into a later one. A pending
+#: ticket is never folded (its notice is keyed by the ticket), so this row is the
+#: evidence that an *alert* -- not an approval request -- was held back.
+NOTIFY_MERGED = "notify_merged"
 #: Reason prefix of a notice whose rendering or delivery raised.
 NOTIFY_ERROR_PREFIX = "notify_error:"
 #: Notice class of the request hook itself, used as the alert tool name.
@@ -4201,6 +4205,14 @@ class Gateway:
         # Requirement: Rate-Limited Notifications.  Two suspended calls are two
         # decisions to make, so the ticket belongs to the limit key: only a repeat
         # notice of the SAME ticket may be folded into the next window.
+        # Money question the limiter must not get wrong: is this notice the only
+        # thing that tells an administrator a call is waiting for an answer? A
+        # suspension with a ticket is, so it is keyed by its ticket and keeps its
+        # own window even when the plan is degraded -- the degraded class shares
+        # one ten-minute window across a requester, and a merged-away pending
+        # notice used to leave a ticket that waited 110 s and timed out with
+        # nothing in the audit table between "suspended" and "timeout_deny".
+        pending = plan.decision is Decision.SUSPENDED and bool(ticket_id)
         admission = self._notify_limiter.admit(
             subject=subject,
             # The alert scope is spent here only: it keeps two sessions from
@@ -4210,9 +4222,21 @@ class Gateway:
             decision=plan.decision,
             degraded=_delivery_degradation(plan),
             ticket_id=ticket_id,
+            pending=pending,
             now=self._clock(),
         )
         if not admission.send:
+            # Requirement: Rate Limiting and Merging.  A held-back notice is not
+            # nothing: without this row the audit table showed the suspension and
+            # then the timeout with no sign that delivery had been suppressed.
+            self._record_notify_merged(
+                plan,
+                ticket_id=ticket_id,
+                tool=tool,
+                subject=subject,
+                session=session,
+                window_s=admission.window_s,
+            )
             return None
         if body:
             # A denial has no ticket and no wait, so the suspension template --
@@ -4441,6 +4465,57 @@ class Gateway:
                 "ticket_id": ticket_id,
                 "summary_line": self._redact_audited(line),
                 "degraded": True,
+                "observe": False,
+                "mode": self.mode,
+                "judge_route": self.judge_route,
+                "rule_set_version": RULE_SET_VERSION,
+            }
+        )
+        self._drain_audit()
+
+    def _record_notify_merged(
+        self,
+        plan: _Plan,
+        *,
+        ticket_id: str,
+        tool: str,
+        subject: str,
+        session: str,
+        window_s: float,
+    ) -> None:
+        """Write the audit row of a notice the rate limiter held back.
+
+        Requirement: Rate Limiting and Merging. A pending ticket is never held
+        back, so this row always means an alert was folded; it exists because a
+        suppressed notice that leaves no trace is indistinguishable, from the
+        audit table alone, from a delivery that silently vanished.
+
+        Args:
+            plan: The plan the notice belonged to.
+            ticket_id: Ticket the notice reported, possibly empty for an alert.
+            tool: Public tool name.
+            subject: Requester key.
+            session: Session key.
+            window_s: Window that held the notice back, in seconds.
+        """
+        writer = self.audit_writer()
+        if writer is None:
+            return
+        window = f"{window_s:g}s" if window_s else "the window"
+        writer.submit(
+            {
+                "decision": plan.decision.value,
+                "source": audit.SOURCE_NATIVE,
+                "would_be": plan.would_be,
+                "rule_id": plan.rule_id,
+                "tool_name": tool,
+                "subject_key": subject,
+                "session_key": session,
+                "ticket_id": ticket_id,
+                "summary_line": self._redact_audited(
+                    f"{NOTIFY_MERGED}: merged into a later notice ({window})"
+                ),
+                "degraded": False,
                 "observe": False,
                 "mode": self.mode,
                 "judge_route": self.judge_route,
