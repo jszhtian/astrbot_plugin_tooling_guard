@@ -8,7 +8,8 @@
 文件读写 / 浏览器 / CUA）纳入一条可审计的「放行 / 挂起 / 拒绝」链路。默认 `mode=observe`（只审计
 不阻断），`enforce` 需先有 observe 期数据且 `admins` 非空。实现已落地，不再是脚手架。
 
-行为语义、模式与不保证项的权威描述在 `README.md`；分层与硬约束在 `ARCHITECTURE.md`；47 个核心工具
+行为语义、模式与不保证项的权威描述在 `README.md`；分层与硬约束在 `ARCHITECTURE.md`；
+每个版本改了什么（面板插件详情页读的就是它）在 `CHANGELOG.md`；47 个核心工具
 的逐个处置在 `TOOL-MATRIX.md`；设计取舍在 `openspec/changes/archive/2026-10-30-add-computer-use-tool-gateway/design.md`。
 
 ## 机制（改动前必须先读）
@@ -53,7 +54,7 @@ astrbot_plugin_tooling_guard/
   metadata.yaml        # AstrBot 靠它识别插件；astrbot_version 必须 >=4.29.4（decision 实体）
   main.py              # Star 子类，注册 /toolguard、/guard，挂 on_llm_request，装配 Gateway
   requirements.txt     # 仅 httpx>=0.27,<1.0
-  _conf_schema.json    # 配置 UI（mode/admins/jev/保留期/名单/审查器/Web/信任域等 42 个键，全中文）
+  _conf_schema.json    # 配置 UI（mode/admins/jev/保留期/名单/审查器/Web/信任域等 49 个键，全中文）
   views/guard/index.html # Web 页面；宿主只发现 views/<目录>/index.html，裸 views/index.html 永不显示
   tooling_guard/       # 网关实现
     compat.py          # GATE_FINGERPRINT、unwrap、上游属性名
@@ -64,7 +65,7 @@ astrbot_plugin_tooling_guard/
     reviewers/         # 具体审查器：policy、base_check、rules、jev_fast、llm_deep
     approval/          # 票据挂起与等待、迟到裁决
     interface/         # hooks.py 钩子适配、install.py 安装与剥离、wrapper.py 代理
-    jev/               # 快审客户端（单次 HTTP，jev_timeout_s 默认 10 秒、上限 30）
+    jev/               # 快审客户端（单次 HTTP，jev_timeout_s 默认 10 秒、上限 50；decision.py 走宿主决策模型）
     notify/            # 管理员通知与回帖
     policy/            # 配置快照、允许/拒绝名单、路径与目的地、敏感目标
     prompts/           # 提示词
@@ -78,7 +79,7 @@ astrbot_plugin_tooling_guard/
   tests/gate1/         # 需要真实 AstrBot 源码树的探测（见下）
   tests/manual/        # 人工验收脚本（纯 stdlib，不需要宿主）
   tests/e2e/           # 真实宿主台架：AstrBot 4.29.3 + aiocqhttp 反向 WS，非 hermetic
-  ARCHITECTURE.md  TOOL-MATRIX.md  README.md  AGENTS.md
+  ARCHITECTURE.md  TOOL-MATRIX.md  README.md  AGENTS.md  CHANGELOG.md
   openspec/changes/archive/2026-10-30-add-computer-use-tool-gateway/   # proposal / design / tasks / specs
 ```
 

@@ -477,7 +477,30 @@ check("llm_fast_source defaults to the endpoint", schema["llm_fast_source"]["def
 check("llm_fast_provider_id picks a provider", schema["llm_fast_provider_id"].get("_special"), "select_provider")
 check("the deep provider id picks a provider", schema["llm_provider_id"].get("_special"), "select_provider")
 names = list(schema)
-check("the jev source follows the jev switch", names[names.index("jev_enabled") + 1], "jev_source")
+check(
+    "the backend and both sources precede the endpoint",
+    [
+        key
+        for key in ("fast_judge_backend", "jev_source", "llm_fast_source")
+        if names.index(key) > names.index("jev_base_url")
+    ],
+    [],
+)
+check(
+    "both fast provider ids precede the endpoint",
+    [key for key in ("jev_provider_id", "llm_fast_provider_id") if names.index(key) > names.index("jev_base_url")],
+    [],
+)
+check(
+    "the fast judge block starts at the switch",
+    names[names.index("jev_enabled") : names.index("jev_enabled") + 6],
+    ["jev_enabled", "fast_judge_backend", "jev_source", "jev_provider_id", "llm_fast_source", "llm_fast_provider_id"],
+)
+check(
+    "the endpoint, model and key stay together",
+    names[names.index("jev_base_url") : names.index("jev_base_url") + 3],
+    ["jev_base_url", "jev_model", "jev_api_key"],
+)
 check("the deep provider id ships", "llm_provider_id" in names, True)
 check(
     "every hint names its key",
@@ -489,9 +512,9 @@ check(
     [key for key in ("jev_source", "llm_fast_source") if "配置校验失败" not in schema[key]["hint"]],
     [],
 )
-check("the version is bumped", __version__, "0.7.0")
+check("the version is bumped", __version__, "0.7.1")
 metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
-check("the metadata ships the version", "version: 0.7.0" in metadata, True)
+check("the metadata ships the version", "version: 0.7.1" in metadata, True)
 check("the minimum host is 4.29.4", 'astrbot_version: ">=4.29.4"' in metadata, True)
 
 print("%d checks, %d failed" % (ok, fail))
