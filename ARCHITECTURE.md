@@ -138,6 +138,43 @@ astrbot_plugin_tooling_guard/
 `deep_analysis_timeout_s`（默认 60s，上限 60）给深审，深审实际预算取 `min(配置, 总预算剩余 - 30s)`。
 超预算或轮内异常不再硬拒，而是按「没有结论」问人（observe 下只记 `would_be`）。
 
+### 快审的来源（0.7.0）
+
+快审不再必须是「插件里贴的第二个端点」。AstrBot 4.29.4 新增了独立于聊天模型的 **Decision Provider**
+（`astrbot/core/provider/decision.py` 的 `DecisionService.ask(questions, state, *, provider_id=None)`，
+`core/star/context.py:181` 挂在 Context 上；决策实体由 `astrbot/api/provider/__init__.py` re-export），
+所以 `tooling_guard/jev/decision.py` 提供两个与会话端点等价的 Judge：
+
+- `DecisionJudge(context, *, provider_id="", timeout_s=None, thresholds=None)`：一次 `ask` 同时问两个头
+  （`risk` = `DecisionScoreQuestion(RISK_INSTRUCTIONS, list(RISK_CRITERIA))`、`deep` =
+  `DecisionBooleanQuestion(DEEP_INSTRUCTIONS)`），答案由 `verdict_from_decision_answers` 折回
+  `FastVerdict`（`probability >= FLAG_THRESHOLD` 即 0.5 算深审建议，与原生协议同一口径）。
+- `ProviderJudge(context, *, provider_id="", timeout_s=None, thresholds=None)`：把同一个 state 交给
+  `DeepReviewClient(llm_mode=astrbot_provider).review(state_json, system_prompt=LLM_SYSTEM_PROMPT)`，
+  再走 `jev/schema.parse_text_answer`——与端点版 `llm` 后端同一个解析器，两条路不可能对「什么算有效回答」
+  有分歧。
+
+两条不变式：**分档、置信下限、深审触发仍然只写在 `jev/score.py`**（两个类只把 `thresholds` 带给
+triage engine，判决仍是 `fast_score.decide`/`forces_deep`）；**读不出答案解析不出结论就是弃权**
+（`FastVerdict(score_pct=None)`），不会被当成放行或拒绝。
+
+接线（`main.py`）：`jev_source` 只在后端 `jev` 时生效、`llm_fast_source` 只在后端 `llm` 时生效，
+两者都是 `endpoint` / `astrbot`；`_fast_judge_source()` 解析这对值，`_fast_judge_callable()` 据此返回
+`FastJudge` / `DecisionJudge` / `ProviderJudge`，**`jev_enabled` 先判**（关掉时三种来源一律返回 `None`，
+jev_fast 审查器报 `no_judge`，不会因为宿主模型免费就绕过开关）。`_build_jev_client()` 在
+source=astrbot 时直接返回 `None`：内置方式不建任何 HTTP 客户端。`astrbot.api.provider` 的导入只在
+`build_decision_questions` 函数体内发生（宿主早于 4.29.4 时插件仍能加载，缺支持报在装配层）。
+
+配置（`policy/config.py`）：`JEV_SOURCE_VALUES` / `LLM_FAST_SOURCE_VALUES` + 两个
+`*_source_unknown` 致命码；`jev_base_url`/`jev_model`/`jev_api_key` 的必填条件从「jev_enabled」收窄为
+「jev_enabled 且当前后端走 endpoint」（`endpoint_field_required`），内置方式不再逼人贴端点。
+`GatewayConfig` 追加 `jev_source`/`jev_provider_id`/`llm_fast_source`/`llm_fast_provider_id` 四个带默认值字段。
+面板的 `_special: select_provider` 只列 `chat_completion`（`dashboard/src/components/shared/ConfigItemRenderer.vue`），
+所以只有两个对话模型 ID 用下拉，决策模型 ID 只能手填。
+
+`metadata.yaml` 因此把最低宿主提到 `>=4.29.4`，版本 0.7.0；`tests/verify_070.py` 断言答案折算、
+懒加载、两个 Judge、来源分派、开关优先与配置校验（宿主实体用 stand-in 模块替换，套件仍不依赖 AstrBot 安装）。
+
 0.6.1 / 0.6.2 / 0.6.4 / 0.6.6 / 0.6.7 / 0.6.8 / 0.6.9 增量（不改判决表，只补证据、去噪、投递可靠性、历史输入与序列强审、归因、通知开关）：
 
 - **0.6.9：未纳管侧通知有开关**。`observation.SideObserver.alert` 是最外层出口，`side_notice_enabled`

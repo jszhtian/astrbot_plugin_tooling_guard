@@ -65,6 +65,14 @@
   「[工具网关] 未纳管侧的工具调用已被观察」，一个计划任务里每调一次工具就是一条。新增开关
   `side_notice_enabled`（默认开）：关掉只停这条私信，**观测照样记录、审计行照写、判定与放行完全不变**
   （跳过的通知在观察对象上记 `skipped=side_notice_disabled`）。
+- **快审可以交给 AstrBot 自己的模型**（0.7.0）：快审不再必须是第二个端点。新增两个接入方式键，
+  各自只对自己的后端生效：`jev_source`（后端 `jev` 时用）= `endpoint`（原来的原生 System One 端点）或
+  `astrbot`（用 AstrBot 4.29.4 新增的**决策模型**Decision Provider，一次 `ask` 同时取回风险分与深审建议）；
+  `llm_fast_source`（后端 `llm` 时用）= `endpoint`（原来的 OpenAI 兼容端点）或 `astrbot`（复用宿主里的
+  **对话模型**，只要求它回一段 JSON）。两种内置方式都只需在宿主里配一次模型，不用再往插件里贴端点和密钥；
+  留空即用宿主的默认模型，也没法用面板下拉挑决策模型（面板的模型选择器只列对话模型），所以要指定就手填提供商 ID。
+  **判决口径完全不变**：两种内置方式返回的还是同一份 `FastVerdict`（分数 / 深审建议 / 把握度），分档、
+  置信下限、深审触发都仍在 `jev.score` 里，没有为谁单独写一套。`jev_enabled` 关掉时三种来源一律不跑。
 - **路径目标必须是盘符或 UNC 形态**（0.6.7）：重定向符是从命令文本里读出来的，所以 python 里的比较运算
   `where ts > '2026-10-30T19'` 曾被读成「把输出写到 2026-10-30T19」，那个碎片进了 targets，再被 `path_deny`
   判一次。现在只有写成盘符/UNC 的 token 才算路径目标；相对写目标（`> out.txt`）仍留在 `write_targets` 里
@@ -81,13 +89,19 @@
 - **`path_deny` / `path_whitelist`**：只能填**绝对路径**。相对路径、`~`、`%VAR%` 会被判致命项——
   网关直接不启用、退化成上面的降级观察。
 - **`suspend_timeout_s`**：等审批的秒数，1–110，**只会缩短上限、绝不放大**，越界直接拒绝而不是悄悄钳制。
-- **`jev_enabled` + `jev_base_url` / `jev_model` / `jev_api_key` + `fast_judge_backend`**：快审
+- **`jev_enabled`**：快审总开关（三种来源共用）。关掉时快审这一层不跑，判定只剩静态层与深审。
+- **`jev_base_url` / `jev_model` / `jev_api_key` + `fast_judge_backend`**：自填端点时的快审
   （**一次**请求，同一次响应里取回风险分、深审建议与把握度；单次上限见下面的 `jev_timeout_s`）。没配齐就不跑快审，
   判定只剩静态层与深审。`jev_base_url` 现在是**完整 endpoint**（如 `http://127.0.0.1:4500/v1/systemone`），
   程序按原样发出、**不再**拼 `/chat/completions`；只填到 `/v1` 这类基址会打到错误路径，而协议走错
   **不报错**，只会一直拿到弃权——弃权不是拒绝，只是「这一层没有意见」，两层都没意见时才开票问管理员。`fast_judge_backend` 选协议：`jev`（默认，把结构化
   JSON 状态 POST 给原生端点，读 `risk` 分数与 `deep` 建议）、`llm`（OpenAI 兼容 chat/completions，
   要求模型只回一段 JSON）；填这两个以外的值配置校验失败、网关不启用。
+  **这三项只在「走自己端点」时需要**（0.7.0）：后端 `jev` 且 `jev_source=endpoint`，或后端 `llm` 且
+  `llm_fast_source=endpoint`。改用 AstrBot 自带模型（`jev_source=astrbot` / `llm_fast_source=astrbot`）时
+  这三项留空不再报配置错误，`jev_provider_id` / `llm_fast_provider_id` 留空即用宿主默认模型。
+  宿主上要么先配一个 decision 类型的模型提供商（`jev_source=astrbot`），要么有一个可用的对话模型
+  （`llm_fast_source=astrbot`），否则每次快审都失败并按**弃权**处理（弃权不是拒绝）。
 - **`jev_timeout_s`（默认 10，1–50）**：一次快审最多等多久。**本机自己跑的判定模型冷启动可能十几秒**
   （Ollama 首次加载约 15 秒），稳态大约 0.6 秒/KB（6 KB 状态约 3.6 秒）。上限 0.6.0 起从 30 抬到 50，就是
   为了容纳冷启动；端点在冷启动就把调高到 30–50。**超时算弃权**：既不放行也不拒绝，交给下一层；越界或非整数
@@ -191,10 +205,14 @@ py -3 tests/verify_063.py
 py -3 tests/verify_064.py
 py -3 tests/verify_065.py
 py -3 tests/verify_066.py
+py -3 tests/verify_067.py
+py -3 tests/verify_068.py
+py -3 tests/verify_069.py
+py -3 tests/verify_070.py
 ```
 
 每个脚本末行打印 `ALL CHECKS PASSED` 即通过；覆盖范围见 `tests/README.md`。
-打发布包：`py -3 tests/make_zip.py 0.6.8`。
+打发布包：`py -3 tests/make_zip.py 0.7.0`。
 
 > 本仓库只随附运行时代码、插件清单、Web 页面与 `tests/` 离线断言。`AGENTS.md` /
 > `ARCHITECTURE.md` 里提到的 `openspec/`、`tests/unit`、`tests/e2e` 属于上游开发树，不在本仓库内；

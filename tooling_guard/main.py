@@ -54,6 +54,7 @@ from .core.reviewer import ReviewerStatus
 from .core.verdict import ReviewOutcome, coerce_outcome
 from .digest import args_digest, args_head
 from .jev.client import DEFAULT_TIMEOUT_S, FastJudge, JevClient, configured_timeout
+from .jev.decision import DecisionJudge, ProviderJudge
 from .jev.score import DETAIL_FORCE_DEEP, FastThresholds
 from .notify.admin import notify_admins, notify_timeout_seconds
 from .notify.messages import (
@@ -5749,13 +5750,18 @@ class Gateway:
         )
 
     def _build_jev_client(self) -> JevClient | None:
-        """Build the fast-judge client, None when it is not configured.
+        """Build the fast-judge endpoint client, None when it is not used.
 
-        Requirement: Reviewer Registry. ``jev_enabled`` is the assembly switch: a
-        switched-off fast reviewer builds no transport at all, so nothing in this
-        process can spend a JEV request however the rest of the pipeline behaves.
+        Requirement: Reviewer Registry; Fast Judge Backends. Two switches decide
+        whether an endpoint client exists at all: ``jev_enabled`` (the fast
+        reviewer takes part) and the source of the backend it will run on. A
+        host-hosted judge reads the host's own providers, so building an
+        endpoint client for it would only demand three credentials nothing
+        sends a request with.
         """
         if self._config is None or not self._jev_enabled():
+            return None
+        if self._fast_judge_source() != "endpoint":
             return None
         try:
             return JevClient(self._config)
@@ -5942,7 +5948,30 @@ class Gateway:
         thresholds the status view reports (`fast_judge_status`), taken from the
         one resolution in `__init__` -- reading the configuration again here
         would let the status page and the decision drift apart.
+
+        Requirement: Fast Judge Backends. The switch is honoured first and for
+        every source: jev_enabled off means the fast layer does not run, whether
+        the judge would have been an endpoint, the host Decision Provider or a
+        host chat provider. A host-backed judge is not a free fallback, so it
+        must not survive a switch the operator turned off.
         """
+        if not self._jev_enabled():
+            return None
+        source = self._fast_judge_source()
+        if source == "astrbot":
+            if self._fast_judge_backend() == "llm":
+                return ProviderJudge(
+                    self._context,
+                    provider_id=_text_of(self._config, "llm_fast_provider_id"),
+                    timeout_s=self._jev_timeout,
+                    thresholds=self._fast_thresholds,
+                )
+            return DecisionJudge(
+                self._context,
+                provider_id=_text_of(self._config, "jev_provider_id"),
+                timeout_s=self._jev_timeout,
+                thresholds=self._fast_thresholds,
+            )
         jev = self._jev_client
         if jev is None:
             return None
@@ -5951,6 +5980,29 @@ class Gateway:
             timeout_s=self._jev_timeout,
             thresholds=self._fast_thresholds,
         )
+
+    def _fast_judge_backend(self) -> str:
+        """Return the configured fast-judge protocol, jev or llm.
+
+        Requirement: Fast Judge Backends. Configuration validation already
+        rejects any other value; the fallback only keeps a hand-built config
+        from turning the source dispatch below into a KeyError.
+        """
+        backend = _text_of(self._config, "fast_judge_backend")
+        return backend if backend in ("jev", "llm") else "jev"
+
+    def _fast_judge_source(self) -> str:
+        """Return where the configured fast judge comes from.
+
+        Requirement: Fast Judge Backends. The two backends have their own source
+        key, so the pair is resolved here once and read by both the endpoint
+        client build and the judge build; an unknown value falls back to the
+        shipped endpoint, which is what an installation older than AstrBot
+        4.29.4 can honour.
+        """
+        key = "jev_source" if self._fast_judge_backend() == "jev" else "llm_fast_source"
+        source = _text_of(self._config, key)
+        return source if source in ("endpoint", "astrbot") else "endpoint"
 
     def _deep_judge_callable(
         self, budget_s: float

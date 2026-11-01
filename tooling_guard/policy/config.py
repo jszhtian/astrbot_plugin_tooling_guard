@@ -25,6 +25,21 @@ MODE_VALUES: Final[frozenset[str]] = frozenset({"observe", "enforce"})
 #: Accepted ``llm_mode`` values.
 LLM_MODE_VALUES: Final[frozenset[str]] = frozenset({"endpoint", "astrbot_provider"})
 
+#: Accepted ``jev_source`` values: where a jev-protocol fast judge comes from.
+#: ``endpoint`` posts the structured state to jev_base_url; ``astrbot`` asks the
+#: host's own Decision Provider (AstrBot >= 4.29.4), which speaks System One
+#: internally and needs no endpoint of its own.
+JEV_SOURCE_VALUES: Final[frozenset[str]] = frozenset({"endpoint", "astrbot"})
+
+#: Accepted ``llm_fast_source`` values: where a chat-completion fast judge comes
+#: from. Same pair as above, resolved against the host chat providers instead.
+LLM_FAST_SOURCE_VALUES: Final[frozenset[str]] = frozenset({"endpoint", "astrbot"})
+
+#: Default of both source keys. An endpoint is the shipped behaviour, and it is
+#: the only source an installation older than AstrBot 4.29.4 can honour.
+JEV_SOURCE_DEFAULT: Final[str] = "endpoint"
+LLM_FAST_SOURCE_DEFAULT: Final[str] = "endpoint"
+
 #: Default ``fast_judge_backend``: the native jev protocol. Both backends eat
 #: the same structured state; they differ only in the wire shape and in how
 #: the answer is read back (jev answers vs chat completion JSON).
@@ -104,6 +119,11 @@ ISSUE_CODES: Final[frozenset[str]] = frozenset(
         # Fatal: allow >= block leaves no middle band and inverts the two
         # extremes; the scoring module refuses to band such a pair at all.
         "fast_thresholds_inverted",
+        # Fatal: an unknown source would silently fall back to the shipped
+        # endpoint, so the operator would believe the host was judging while a
+        # stale URL was.
+        "jev_source_unknown",
+        "llm_fast_source_unknown",
         "llm_mode_unknown",
         "not_bool",
         "not_int",
@@ -287,6 +307,21 @@ class GatewayConfig:
     #: on how long a call may spend being judged before it is either answered
     #: or handed to an administrator.
     decision_budget_s: int = DEFAULT_DECISION_BUDGET_S
+    #: Where a jev-protocol fast judge comes from: "endpoint" posts to
+    #: jev_base_url, "astrbot" asks the host Decision Provider that AstrBot
+    #: 4.29.4 exposes as Context.decision. The shipped default is the endpoint,
+    #: so an installation that never touches this key keeps its old behaviour.
+    jev_source: str = JEV_SOURCE_DEFAULT
+    #: Decision provider id used when jev_source is "astrbot". Empty means "use
+    #: the decision provider the host currently serves", mirroring how an empty
+    #: llm_provider_id means the host default chat model.
+    jev_provider_id: str = ""
+    #: Where a chat-completion fast judge comes from, i.e. fast_judge_backend
+    #: "llm". Same two choices, resolved against host chat providers.
+    llm_fast_source: str = LLM_FAST_SOURCE_DEFAULT
+    #: Chat provider id used when llm_fast_source is "astrbot". Empty means the
+    #: host default chat model.
+    llm_fast_provider_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,11 +463,10 @@ def validate_config(raw: Mapping[str, object]) -> ConfigValidationResult:
             pairs.append((name.strip(), f"{platform.strip()}:{user_id.strip()}"))
         return pairs
 
-    def required(key: str) -> str:
-        value = text(key)
-        if not value:
-            issue(key, "缺少必需配置；网关不会启用。", "required_missing")
-        return value
+    # required() is gone with its only caller: the endpoints jev_* serve are
+    # now required conditionally (backend plus source), and that check reports
+    # which key of which judge is missing. The required_missing code stays in
+    # ISSUE_CODES because a code is part of the observable contract.
 
     def boolean(key: str, *, default: bool = False) -> bool:
         value = raw.get(key, default)
@@ -576,16 +610,34 @@ def validate_config(raw: Mapping[str, object]) -> ConfigValidationResult:
     # refusing to start over three keys nothing would read.
     jev_enabled = boolean("jev_enabled")
     llm_enabled = boolean("llm_enabled", default=True)
-    if jev_enabled:
-        jev_base_url = required("jev_base_url")
-        jev_model = required("jev_model")
-        jev_api_key = required("jev_api_key")
-    else:
-        # Read without the requirement so a wrong type is still reported and
-        # the operator keeps whatever was typed for later inspection.
-        jev_base_url = text("jev_base_url")
-        jev_model = text("jev_model")
-        jev_api_key = text("jev_api_key")
+    # Where the fast judge comes from. Read before the endpoint keys because
+    # whether those keys are required at all now depends on this pair and on
+    # the backend: an AstrBot-hosted judge reads the host's providers, and a
+    # chat-completion judge found there needs no endpoint either. An unknown
+    # value is fatal rather than defaulted -- a typo would otherwise leave the
+    # operator believing the host judges while a stale endpoint does.
+    jev_source = text("jev_source") or JEV_SOURCE_DEFAULT
+    if jev_source not in JEV_SOURCE_VALUES:
+        issue(
+            "jev_source",
+            "仅支持 endpoint 或 astrbot；网关不会启用。",
+            "jev_source_unknown",
+        )
+    jev_provider_id = text("jev_provider_id")
+    llm_fast_source = text("llm_fast_source") or LLM_FAST_SOURCE_DEFAULT
+    if llm_fast_source not in LLM_FAST_SOURCE_VALUES:
+        issue(
+            "llm_fast_source",
+            "仅支持 endpoint 或 astrbot；网关不会启用。",
+            "llm_fast_source_unknown",
+        )
+    llm_fast_provider_id = text("llm_fast_provider_id")
+    # Read without the requirement here; the requirement is decided below, once
+    # fast_judge_backend is known, so a wrong type is still reported and the
+    # operator keeps whatever was typed for later inspection.
+    jev_base_url = text("jev_base_url")
+    jev_model = text("jev_model")
+    jev_api_key = text("jev_api_key")
     llm_mode = text("llm_mode") or "astrbot_provider"
     if llm_mode not in LLM_MODE_VALUES:
         issue("llm_mode", "仅支持 endpoint 或 astrbot_provider。", "llm_mode_unknown")
@@ -613,6 +665,23 @@ def validate_config(raw: Mapping[str, object]) -> ConfigValidationResult:
             "仅支持 jev 或 llm。",
             "fast_judge_backend_unknown",
         )
+    # The three endpoint keys are required only by a judge that will actually
+    # post to an endpoint, which is the backend's own source key: a jev backend
+    # reads jev_source, an llm backend reads llm_fast_source. A host-hosted
+    # judge (and a switched-off fast judge) requires none of them.
+    fast_source = jev_source if fast_judge_backend == "jev" else llm_fast_source
+    if jev_enabled and fast_source == "endpoint":
+        for key, value in (
+            ("jev_base_url", jev_base_url),
+            ("jev_model", jev_model),
+            ("jev_api_key", jev_api_key),
+        ):
+            if not value:
+                issue(
+                    key,
+                    "快审使用 endpoint 时此项必填；网关不会启用。",
+                    "endpoint_field_required",
+                )
     # Bands are read strictly and never clamped (a clamped band would hide the
     # operator mistake), and an inverted pair is fatal on top of the range
     # check: the scoring module refuses to band an inverted pair, so every
@@ -801,6 +870,10 @@ def validate_config(raw: Mapping[str, object]) -> ConfigValidationResult:
         web_subject_map=tuple(web_subject_map),
         jev_enabled=jev_enabled,
         llm_enabled=llm_enabled,
+        jev_source=jev_source,
+        jev_provider_id=jev_provider_id,
+        llm_fast_source=llm_fast_source,
+        llm_fast_provider_id=llm_fast_provider_id,
     )
     return ConfigValidationResult(
         enabled=True, config=config, warnings=(), advisories=tuple(advisories)

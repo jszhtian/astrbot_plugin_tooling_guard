@@ -15,6 +15,10 @@ py -3 tests/verify_063.py
 py -3 tests/verify_064.py
 py -3 tests/verify_065.py
 py -3 tests/verify_066.py
+py -3 tests/verify_067.py
+py -3 tests/verify_068.py
+py -3 tests/verify_069.py
+py -3 tests/verify_070.py
 ```
 
 每个脚本末行打印 `ALL CHECKS PASSED`，退出码 0 即通过。
@@ -30,5 +34,9 @@ py -3 tests/verify_066.py
 | `verify_064.py` | 轨迹窗口（`TrajectoryRecorder`/`TrajectoryView`）、ISO 时间、`trajectory_history` 进模型输入 |
 | `verify_065.py` | 记录带 `targets`，R7 才可能在生产里命中 |
 | `verify_066.py` | R7 命中强制深审（`FORCED_DEEP_RULES`），jev 放行也照写 force 标记 |
+| `verify_067.py` | 归因层（stage/layer/source）、`rule_ids_role=evidence`、路径目标形态收敛 |
+| `verify_068.py` | 回执里的归因句（`_spoken_reason`），放行不加 |
+| `verify_069.py` | 未纳管侧通知开关只停私信，观测与审计不变 |
+| `verify_070.py` | 0.7.0 快审来源：`verdict_from_decision_answers` 折算与弃权、懒加载 `astrbot.api.provider`、`DecisionJudge`/`ProviderJudge` 调用与超时、`jev_enabled` 优先、来源分派、endpoint 必填条件、schema 与版本号 |
 
 `make_zip.py <版本号>` 打发布包（排除 `tests/`、`__pycache__`、`.git`）。

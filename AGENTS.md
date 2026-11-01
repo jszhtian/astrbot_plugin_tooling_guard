@@ -1,6 +1,6 @@
 # AGENTS.md — astrbot_plugin_tooling_guard
 
-面向在本目录工作的 AI agent 的项目约定、公开契约与待办。基线：AstrBot 4.29.3（commit `0e997cc`）。
+面向在本目录工作的 AI agent 的项目约定、公开契约与待办。基线：AstrBot 4.29.4（decision 接口在 4.29.4 引入，最低宿主因此抬到该版本；4.29.3 commit `0e997cc` 仍是其余契约的核对基准）。
 
 ## 这是什么
 
@@ -50,7 +50,7 @@
 
 ```
 astrbot_plugin_tooling_guard/
-  metadata.yaml        # AstrBot 靠它识别插件；astrbot_version 必须 >=4.29.3
+  metadata.yaml        # AstrBot 靠它识别插件；astrbot_version 必须 >=4.29.4（decision 实体）
   main.py              # Star 子类，注册 /toolguard、/guard，挂 on_llm_request，装配 Gateway
   requirements.txt     # 仅 httpx>=0.27,<1.0
   _conf_schema.json    # 配置 UI（mode/admins/jev/保留期/名单/审查器/Web/信任域等 42 个键，全中文）
