@@ -3335,6 +3335,7 @@ class Gateway:
                         session=session,
                         tool=tool,
                         digest_value=digest_value,
+                        ticket_kind=plan.ticket_kind,
                     )
                     if ticket is None:
                         plan = _Plan(
@@ -4035,6 +4036,57 @@ class Gateway:
             rule_id=plan.rule_id,
             judge_route=plan.judge_route,
         )
+
+    def note_call_result(
+        self,
+        outcome: Any,
+        *,
+        ok: bool,
+        error: str | None = None,
+        elapsed: float | None = None,
+    ) -> None:
+        """Persist how an approved call the gateway released actually ended.
+
+        Requirement: Ticket Lifecycle (a consumed ticket that ran ends in
+        completed, and its result is readable afterwards).
+
+        The gateway decides before the tool runs, so at release time it knows
+        only that consent existed -- not whether the call worked. The proxy is
+        the only place that sees the return value and the exception, and it
+        calls this hook after delegating. A ticket that is not consumed (the
+        call never became the approved retry), a store that is unavailable or a
+        transition the state machine refuses all leave the ticket untouched:
+        this is bookkeeping, never authorization.
+
+        Args:
+            outcome: The allow outcome of the call, carrying its ticket id.
+            ok: True when the delegated tool returned without raising.
+            error: Exception class name when it raised, else None.
+            elapsed: Wall time the delegated tool took, in seconds.
+        """
+        ticket_id = str(getattr(outcome, "ticket_id", "") or "")
+        if not ticket_id:
+            return
+        conn = self._open_store()
+        if conn is None:
+            return
+        seconds = 0.0 if elapsed is None else float(elapsed)
+        if ok:
+            summary = f"批准后执行完成：工具调用返回成功（耗时 {seconds:.1f} 秒）。"
+            reason = "approved call executed"
+        else:
+            summary = f"批准后执行失败：{error or 'UnknownError'}（耗时 {seconds:.1f} 秒）。"
+            reason = "approved call failed"
+        try:
+            tickets.complete_ticket(
+                conn,
+                ticket_id,
+                actor="gateway:execute",
+                result_summary=self._redact(summary),
+                reason=reason,
+            )
+        except Exception:  # noqa: BLE001 - bookkeeping must not break the call
+            return
 
     def _note_approval_use(
         self,
@@ -5710,6 +5762,7 @@ class Gateway:
         session: str,
         tool: str,
         digest_value: str,
+        ticket_kind: str | None = None,
     ) -> Any:
         """Create one suspension ticket, None when storage is unavailable.
 
@@ -5720,6 +5773,8 @@ class Gateway:
             session: Session key.
             tool: Public tool name.
             digest_value: Canonical argument digest.
+            ticket_kind: Reason word the ticket is opened for, persisted so the
+                UI can answer "why was this ticket opened" after the fact.
 
         Returns:
             The created Ticket, or None when the store refused the write.
@@ -5734,6 +5789,7 @@ class Gateway:
                 session_key=session,
                 tool_name=tool,
                 args_digest=digest_value,
+                ticket_kind=ticket_kind,
             )
         except Exception:  # noqa: BLE001 - no ticket means no suspension
             return None

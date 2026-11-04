@@ -55,7 +55,7 @@ LEGACY_PLUGIN_NAME = "astrbot_tooling_guard"
 DB_FILENAME = "tooling_guard.sqlite3"
 """Database file name inside the plugin data directory."""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """Schema version this code writes and understands."""
 
 BUSY_TIMEOUT_MS = 150
@@ -125,7 +125,8 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
     retry_consumed INTEGER NOT NULL DEFAULT 0,
     result_summary TEXT,
     updated_at TEXT NOT NULL,
-    completed_at TEXT
+    completed_at TEXT,
+    ticket_kind TEXT
 )""",
         """CREATE INDEX IF NOT EXISTS idx_tickets_state ON tickets(state)""",
         """CREATE TABLE IF NOT EXISTS ticket_transitions (
@@ -163,8 +164,15 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """CREATE INDEX IF NOT EXISTS idx_notice_deliveries_ticket
     ON notice_deliveries(ticket_id)""",
     ),
+    3: (),
 }
-"""Forward-only migrations keyed by target schema version."""
+"""Forward-only migrations keyed by target schema version.
+
+Version 3 adds no table of its own: `tickets.ticket_kind` is a late column and
+is created by `_ensure_columns` (idempotent) rather than by a bare ALTER TABLE
+inside a migration.  The bump is still recorded so a file written by this
+version cannot be read by an older build as a version it understands.
+"""
 
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("audit_events", "judge_route", "TEXT"),
@@ -174,6 +182,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("audit_events", "delegated", "TEXT"),
     ("audit_events", "summary_json", "TEXT"),
     ("audit_events", "actor", "TEXT"),
+    ("tickets", "ticket_kind", "TEXT"),
 )
 """Columns added after the initial schema, as (table, column, declaration).
 

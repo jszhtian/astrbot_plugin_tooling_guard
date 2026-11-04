@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import math
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -352,6 +353,41 @@ async def _forward(value: Any, event: Any) -> Any:
     return value
 
 
+def _report_result(
+    gateway: Any,
+    outcome: Any,
+    *,
+    ok: bool,
+    error: str | None,
+    elapsed: float,
+) -> None:
+    """Tell the gateway how the call it released actually ended.
+
+    Requirement: Ticket Lifecycle (a consumed ticket ends in completed or not at
+    all). The gateway cannot know this: it writes its decision before the tool
+    runs and hands execution over on purpose. Only the proxy sees the return
+    value or the exception, so the closing bookkeeping happens here. A gateway
+    without the hook (or an older one) is simply not informed, and a failing
+    hook never turns a completed tool call into an error.
+
+    Args:
+        gateway: Gateway that decided this call.
+        outcome: The allow outcome carrying the ticket id, when there is one.
+        ok: True when the delegated tool returned without raising.
+        error: Exception class name when it raised, else None.
+        elapsed: Wall time the delegated tool took, in seconds.
+    """
+    if gateway is None or outcome is None:
+        return
+    hook = getattr(gateway, "note_call_result", None)
+    if not callable(hook):
+        return
+    try:
+        hook(outcome, ok=ok, error=error, elapsed=elapsed)
+    except Exception:  # noqa: BLE001 - bookkeeping must not break the call
+        pass
+
+
 class ManagedToolProxy(FunctionTool):
     """Public FunctionTool adapter; no policy or execution is implemented."""
 
@@ -432,7 +468,26 @@ class ManagedToolProxy(FunctionTool):
             )
         decision = _decision(outcome)
         if decision == "allow":
-            return await self._delegate(context, kwargs)
+            started = time.monotonic()
+            try:
+                value = await self._delegate(context, kwargs)
+            except BaseException as exc:  # noqa: BLE001 - re-raised unchanged
+                _report_result(
+                    self._gateway,
+                    outcome,
+                    ok=False,
+                    error=type(exc).__name__,
+                    elapsed=time.monotonic() - started,
+                )
+                raise
+            _report_result(
+                self._gateway,
+                outcome,
+                ok=True,
+                error=None,
+                elapsed=time.monotonic() - started,
+            )
+            return value
         provided = _field(outcome, "result")
         if provided is not None:
             return provided

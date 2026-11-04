@@ -125,6 +125,7 @@ _COLUMNS: tuple[str, ...] = (
     "result_summary",
     "updated_at",
     "completed_at",
+    "ticket_kind",
 )
 
 
@@ -152,6 +153,7 @@ class Ticket:
     result_summary: str | None = None
     updated_at: str = ""
     completed_at: str | None = None
+    ticket_kind: str | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> Ticket:
@@ -182,6 +184,7 @@ class Ticket:
             result_summary=row["result_summary"],
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
+            ticket_kind=row["ticket_kind"],
         )
 
 
@@ -360,6 +363,7 @@ def create_ticket(
     args_digest: str,
     ticket_id: str | None = None,
     marker: str | None = None,
+    ticket_kind: str | None = None,
     now: datetime | float | str | None = None,
 ) -> Ticket:
     """Persist a new ticket in the pending state.
@@ -376,6 +380,8 @@ def create_ticket(
         args_digest: Canonical digest of the schema-filtered arguments.
         ticket_id: Optional UUID; generated when omitted.
         marker: Optional unguessable marker; generated when omitted.
+        ticket_kind: Optional reason word the ticket was opened for
+            ('model_deny' / 'all_abstain'); None when the caller has none.
         now: Creation instant, defaults to the current UTC time.
 
     Returns:
@@ -406,6 +412,7 @@ def create_ticket(
         None,
         created,
         None,
+        None if ticket_kind is None else _check_name(ticket_kind, "ticket_kind"),
     )
     columns = ", ".join(_COLUMNS)
     placeholders = ", ".join("?" for _ in _COLUMNS)

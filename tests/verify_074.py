@@ -191,7 +191,7 @@ def reply(gw, event, text, **kwargs):
 
 gw, conn = make_gateway()
 versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
-check("the migration reaches schema 2", max(versions), 2)
+check("the migration reaches schema 3", max(versions), 3)
 check("the table exists", "notice_deliveries" in [
     row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
 ], True)
@@ -403,11 +403,11 @@ check("the deliveries are consulted", "notices.delivered_ticket_ids" in source, 
 main_source = (ROOT / "tooling_guard" / "main.py").read_text(encoding="utf-8")
 check("deliveries are recorded at the send boundary",
       "notices.record_deliveries(" in main_source, True)
-check("the version is bumped", __version__, "0.7.4")
 metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
-check("the metadata ships the version", "version: 0.7.4" in metadata, True)
+check("the metadata ships the running version", "version: " + __version__ in metadata, True)
 changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-check("the changelog names the release", "## 0.7.4" in changelog, True)
+check("the changelog names the running version", "## " + __version__ in changelog, True)
+check("the release at hand is at least 0.7.4", tuple(map(int, __version__.split("."))) >= (0, 7, 4), True)
 
 print("%d checks, %d failed" % (ok, fail))
 if fail:

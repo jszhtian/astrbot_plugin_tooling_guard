@@ -104,6 +104,7 @@ REVIEW_FIELDS: tuple[str, ...] = (
 TICKET_FIELDS: tuple[str, ...] = (
     "ticket_id",
     "state",
+    "ticket_kind",
     "subject_key",
     "session_key",
     "tool_name",
