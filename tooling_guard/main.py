@@ -108,7 +108,7 @@ from .reviewers.jev_fast import NAME as JEV_FAST_NAME
 from .reviewers.llm_deep import NAME as DEEP_REVIEWER_NAME
 from .reviewers.policy import NAME as POLICY_NAME
 from .reviewers.rules import NAME as RULES_NAME
-from .store import audit, db, tickets
+from .store import audit, db, notices, tickets
 from .trace import intent as intent_trace
 from .trace.recorder import TrajectoryRecorder
 from .trace.summary import CallSummary, summarize_call
@@ -4651,7 +4651,36 @@ class Gateway:
         # names the origins the notice was addressed to instead of claiming an
         # account received it.
         self._record_notify_sent(audit, targets=self._attempted(sender))
+        self._record_deliveries(audit, sender)
         return True
+
+    def _record_deliveries(self, notice: _NoticeAudit | None, sender: Any) -> None:
+        """Record which administrators the suspension notice reached.
+
+        Requirement: Reply Approval Channel. When an administrator answers with a
+        bare 同意 and names no ticket, the reply channel has to work out which
+        pending ticket that reply is about. The audit row proves a delivery
+        happened but cannot be queried per administrator, so the (ticket, admin)
+        relation is written here, at the one boundary every notice passes
+        through -- and only for a notice that has a ticket: an alert is not
+        something an administrator approves.
+
+        A failure to record is swallowed: it makes a bare 同意 ambiguous (which
+        the reply channel then refuses with a visible hint), never a decision.
+
+        Args:
+            notice: Audit identity of the notice, or None for a path with none.
+            sender: The sender build_sender returned, possibly None.
+        """
+        if notice is None or not notice.ticket_id:
+            return
+        with contextlib.suppress(Exception):
+            conn = self._open_store()
+            if conn is None:
+                return
+            notices.record_deliveries(
+                conn, notice.ticket_id, delivery_attempts(sender)
+            )
 
     def _attempted(self, sender: Any) -> tuple[str, ...]:
         """Return the private origins one delivery attempt was addressed to.

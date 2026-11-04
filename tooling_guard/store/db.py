@@ -55,7 +55,7 @@ LEGACY_PLUGIN_NAME = "astrbot_tooling_guard"
 DB_FILENAME = "tooling_guard.sqlite3"
 """Database file name inside the plugin data directory."""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 """Schema version this code writes and understands."""
 
 BUSY_TIMEOUT_MS = 150
@@ -150,6 +150,19 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """CREATE INDEX IF NOT EXISTS idx_trajectory_snippets_subject
     ON trajectory_snippets(subject_key, id)""",
     ),
+    2: (
+        """CREATE TABLE IF NOT EXISTS notice_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id TEXT NOT NULL,
+    admin TEXT NOT NULL,
+    target TEXT,
+    sent_at TEXT NOT NULL
+)""",
+        """CREATE INDEX IF NOT EXISTS idx_notice_deliveries_admin
+    ON notice_deliveries(admin, sent_at)""",
+        """CREATE INDEX IF NOT EXISTS idx_notice_deliveries_ticket
+    ON notice_deliveries(ticket_id)""",
+    ),
 }
 """Forward-only migrations keyed by target schema version."""
 
@@ -174,6 +187,7 @@ TABLES: tuple[str, ...] = (
     "tickets",
     "ticket_transitions",
     "trajectory_snippets",
+    "notice_deliveries",
 )
 """Tables the migration guarantees to exist."""
 

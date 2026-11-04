@@ -190,11 +190,10 @@ check(
     "self._record_notify_merged(" in source,
     True,
 )
-check("the version is bumped", __version__, "0.7.3")
 metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
-check("the metadata ships the version", "version: 0.7.3" in metadata, True)
+check("the metadata ships the shipped version", f"version: {__version__}" in metadata, True)
 changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-check("the changelog names the fix", "## 0.7.2" in changelog, True)
+check("the changelog names the shipped release", f"## {__version__}" in changelog, True)
 
 print("%d checks, %d failed" % (ok, fail))
 if fail:

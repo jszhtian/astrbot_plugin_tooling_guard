@@ -64,7 +64,9 @@ __all__ = [
     "Command",
     "finalize_reply",
     "handle_command",
+    "admin_entries_for",
     "parse_command",
+    "sender_facts",
     "startup_sweep_view",
 ]
 
@@ -324,6 +326,52 @@ def admin_actor(gateway: Any, event: Any) -> str | None:
         The administrator identity string, or None when the sender may not decide.
     """
     return _admin_actor(gateway, event)
+
+
+def sender_facts(gateway: Any, event: Any) -> Any:
+    """Return every identity fact the approval gate reads about one sender.
+
+    Requirement: Approver Authorization; Sender Self-Identification. The reply
+    channel needs the same two conditions /guard applies, and it needs to say
+    *which* one failed when it refuses — a silent refusal is how an administrator
+    ends up believing a decision was recorded. Both therefore read this one
+    function instead of restating the gate.
+
+    Args:
+        gateway: Gateway owning the admins allowlist.
+        event: Host message event, possibly None.
+
+    Returns:
+        The sender facts: subject, platform, message type, sender id, whether the
+        configured allowlist names this sender, and whether the host reports it
+        as an administrator.
+    """
+    return _sender_facts(gateway, event)
+
+
+def admin_entries_for(gateway: Any, origin: str) -> tuple[str, ...]:
+    """Return the configured administrator entries that name one sender.
+
+    Requirement: Approver Authorization; Quoted Reply Resolution. The notice is
+    addressed to a *configured* entry ("1234567", "aiocqhttp:1234567"), while an
+    event identifies its sender by origin ("aiocqhttp:1234567"). Anything that
+    stored "which administrator was told" therefore stores the entry, and
+    anything that asks "what was this sender told" has to translate back through
+    the same is_admin_subject rule the gate uses -- otherwise the two never meet.
+
+    Args:
+        gateway: Gateway owning the admins allowlist.
+        origin: Identity in "platform_id:sender_id" form.
+
+    Returns:
+        The matching entries, empty when none names this sender.
+    """
+    key = (origin or "").strip()
+    if not key:
+        return ()
+    return tuple(
+        entry for entry in _admin_entries(gateway) if is_admin_subject(key, (entry,))
+    )
 
 
 def chat_type(event: Any) -> str:
@@ -976,8 +1024,16 @@ def decide_ticket(
     Equivalent. Only the PENDING -> APPROVED|DENIED compare-and-swap in
     store/tickets.py runs here, so a second decision loses the race and is
     settled by the same late path the command plane uses. Approval only waives
-    a suspension: it never overrides deny_rule, deny_policy or deny_judge, and
-    it never replays the original tool call.
+    a suspension: it never overrides deny_rule, deny_policy or deny_judge.
+
+    Whether the approved call then runs is not decided here. A live waiter
+    consumes the approval and executes exactly the arguments the administrator
+    saw (main._execute_on_approval, config execute_on_approval); with no waiter,
+    the approval stays standing and the requester's identical retry consumes it.
+    This function only moves the state, which is why it writes its own audit row
+    solely when no waiter will: otherwise the execution row -- the one carrying
+    the real tool, the real arguments and the real result -- is the evidence, and
+    a second row here made one approval look like two releases.
 
     Args:
         gateway: Gateway owning the store, registry and redactor.
@@ -1043,27 +1099,36 @@ def decide_ticket(
         and _withdraw_unconsumable_approval(conn, ticket_id, actor=actor)
     )
     if approve:
-        summary = f"guard approve {ticket_id}"
-        if self_approved:
-            summary += " self_approved"
-        if withdrew:
-            summary += " retry_window=withdrawn reason=no_waiter"
-        failure = record_action(
-            gateway,
-            decision=Decision.ALLOW_APPROVED_RETRY.value,
-            summary=summary,
-            actor=actor,
-            ticket_id=ticket_id,
-            subject_key=subject_key,
-            rule_id="guard_admin_approve",
-            source=source,
-            tool_name=tool_name,
-        )
-        message = f"已批准 {ticket_id}：批准窗口内可重试一次。"
+        failure = None
+        if not woke:
+            # Requirement: Approval Ticket Lifecycle; Decision Commands. No
+            # waiter will execute this approval, so the decision is the only
+            # evidence there is and it is recorded here. When a waiter exists the
+            # execution records the row against the real tool and arguments, and
+            # the approver is still named by the ticket_transitions row.
+            summary = f"guard approve {ticket_id}"
+            if self_approved:
+                summary += " self_approved"
+            if withdrew:
+                summary += " retry_window=withdrawn reason=no_waiter"
+            failure = record_action(
+                gateway,
+                decision=Decision.ALLOW_APPROVED_RETRY.value,
+                summary=summary,
+                actor=actor,
+                ticket_id=ticket_id,
+                subject_key=subject_key,
+                rule_id="guard_admin_approve",
+                source=source,
+                tool_name=tool_name,
+            )
+        message = f"已批准 {ticket_id}："
         if withdrew:
             message += "但无存活等待方，重试窗口已撤回。"
+        elif woke:
+            message += "等待方已唤醒，本次调用随即按批准的参数执行。"
         else:
-            message += "等待方已唤醒。" if woke else "当前无等待方。"
+            message += "当前无等待方，可在批准窗口内重发同一调用一次。"
         if self_approved:
             message += SELF_APPROVAL_NOTE
     else:
