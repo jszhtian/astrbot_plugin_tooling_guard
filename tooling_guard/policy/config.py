@@ -276,6 +276,13 @@ class GatewayConfig:
     #: llm_mode=astrbot_provider an empty llm_provider_id means "use the model
     #: the host currently has as its default", which needs no endpoint.
     llm_enabled: bool = True
+    #: Whether an approval is executed by the round that took it.  On (the
+    #: default) the gateway consumes the ticket and runs the very call the
+    #: administrator approved, so nothing has to reproduce the arguments; off
+    #: restores the older protocol, where the model must resend identical bytes
+    #: and the approval waits on the ticket for it.  It cannot relax a decision:
+    #: the switch only moves who performs an already-approved call.
+    execute_on_approval: bool = True
     #: How the fast judge speaks to jev_base_url. jev posts the structured
     #: state to the endpoint and reads the score/noul answer; llm posts an
     #: OpenAI-compatible chat completion to the same endpoint and reads the
@@ -610,6 +617,7 @@ def validate_config(raw: Mapping[str, object]) -> ConfigValidationResult:
     # refusing to start over three keys nothing would read.
     jev_enabled = boolean("jev_enabled")
     llm_enabled = boolean("llm_enabled", default=True)
+    execute_on_approval = boolean("execute_on_approval", default=True)
     # Where the fast judge comes from. Read before the endpoint keys because
     # whether those keys are required at all now depends on this pair and on
     # the backend: an AstrBot-hosted judge reads the host's providers, and a
@@ -870,6 +878,7 @@ def validate_config(raw: Mapping[str, object]) -> ConfigValidationResult:
         web_subject_map=tuple(web_subject_map),
         jev_enabled=jev_enabled,
         llm_enabled=llm_enabled,
+        execute_on_approval=execute_on_approval,
         jev_source=jev_source,
         jev_provider_id=jev_provider_id,
         llm_fast_source=llm_fast_source,

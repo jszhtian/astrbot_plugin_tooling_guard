@@ -512,9 +512,9 @@ check(
     [key for key in ("jev_source", "llm_fast_source") if "配置校验失败" not in schema[key]["hint"]],
     [],
 )
-check("the version is bumped", __version__, "0.7.2")
+check("the version is bumped", __version__, "0.7.3")
 metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
-check("the metadata ships the version", "version: 0.7.2" in metadata, True)
+check("the metadata ships the version", "version: 0.7.3" in metadata, True)
 check("the minimum host is 4.29.4", 'astrbot_version: ">=4.29.4"' in metadata, True)
 
 print("%d checks, %d failed" % (ok, fail))

@@ -12,7 +12,11 @@ endpoint answers a risk score on the scale of the five bands plus a yes/no deep
 question. That score is in criteria-index space (a real endpoint answered 3.72),
 so it is normalized here through `normalize_score` before any band is applied.
 `parse_llm_answer` reads an OpenAI-compatible chat answer whose content must be
-one JSON object carrying `score` as a 0..100 integer and `noul` as a boolean.
+one JSON object carrying a `score` on the 0..100 scale and a `noul` flag. The
+number is read in every shape a model actually writes it -- `72`, `72.0`,
+`"72"` -- because a reviewer that states the right number as a float has still
+answered; the flag is read through `_flag`, and an absent or unusable flag
+defaults to false rather than voiding the score it arrived with.
 
 Three answers travel: `score`, `noul` and `confidence`. The third one is
 optional by design. It is read from `answers.risk.confidence` on the native
@@ -255,15 +259,44 @@ def _content_of(response: Any) -> str | None:
     return content if isinstance(content, str) else None
 
 
+def _int_score(value: Any) -> int | None:
+    """Read a 0..100 score out of one answer, tolerant of its numeric shape.
+
+    A model that means 72 writes `72`, `72.0` or `"72"` depending on the day and
+    the provider; all three are the same answer, so all three are read. A boolean
+    is never a score, a value outside 0..100 is not one either, and a word is not
+    guessed at -- that would invent a band the model never stated.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        number = round(float(value))
+    except (OverflowError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number if 0 <= number <= 100 else None
+
+
 def parse_llm_answer(response: Any) -> FastVerdict:
     """Read one OpenAI-compatible chat answer as a verdict.
 
     Requirement: Fail-Closed Triage. The content must contain one JSON object
-    with `score` a 0..100 integer (a boolean or a float is not an integer
-    answer) and `noul` a boolean. Both are required: a partial answer cannot be
-    banded, and half an answer is not evidence of safety. A `confidence` is
-    read when the object carries a usable one; its absence changes nothing but
-    the note.
+    with a readable `score` on the 0..100 scale; `score` may be an integer, a
+    float or a numeric string (see `_int_score`), because those are one answer
+    written three ways. `noul` is read through `_flag`, and when it is missing
+    or unusable it becomes False instead of voiding the answer: the flag only
+    escalates a call to the deep layer, so losing it costs one escalation, while
+    discarding the score would throw away the verdict the model did deliver. A
+    `confidence` is read when the object carries a usable one; its absence
+    changes nothing but the note.
 
     A fenced block or surrounding prose is tolerated, because the parse looks
     for the first object that decodes, not for a prefix.
@@ -282,14 +315,12 @@ def parse_llm_answer(response: Any) -> FastVerdict:
     answered = _json_object(content)
     if answered is None:
         return _unreadable()
-    score = answered.get("score")
-    if isinstance(score, bool) or not isinstance(score, int):
-        return _unreadable(score)
-    if not 0 <= score <= 100:
-        return _unreadable(score)
-    noul = answered.get("noul")
-    if not isinstance(noul, bool):
-        return _unreadable(score)
+    score = _int_score(answered.get("score"))
+    if score is None:
+        return _unreadable(answered.get("score"))
+    noul = _flag(answered.get("noul"))
+    if noul is None:
+        noul = False
     confidence = _confidence(answered)
     index = score / 100 * (len(RISK_CRITERIA) - 1)
     return FastVerdict(

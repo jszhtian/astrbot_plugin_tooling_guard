@@ -9,6 +9,7 @@ import sys
 import types
 
 from tooling_guard.main import Gateway, _Plan
+from tooling_guard.prompts.deep_call import DATA_BEGIN, DATA_END, build_deep_body
 from tooling_guard.triage.decisions import Decision
 from tooling_guard.core.verdict import ReviewOutcome
 from tooling_guard.web import queries as q
@@ -60,7 +61,16 @@ check("deep answer score", verdict.score_pct, 12)
 sent = first.calls[0]
 check("deep got a system prompt", sent[2], True)
 check("deep got a response format", sent[3], True)
-check("deep prompt is the state json", sent[0], json.dumps({"tool": "astrbot_execute_shell"}, ensure_ascii=False))
+check(
+    "deep prompt frames the state as data",
+    sent[0],
+    build_deep_body(state={"tool": "astrbot_execute_shell"}),
+)
+check(
+    "deep prompt keeps the state inside the frame",
+    DATA_BEGIN in sent[0] and DATA_END in sent[0],
+    True,
+)
 check("deep timeout is the budget", sent[1], 5.0)
 
 

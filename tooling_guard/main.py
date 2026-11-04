@@ -83,6 +83,7 @@ from .prompts.deep_call import (
     RESPONSE_FORMAT as DEEP_RESPONSE_FORMAT,
     SYSTEM_PROMPT as DEEP_SYSTEM_PROMPT,
     build_deep_body,
+    build_deep_retry_body,
 )
 from .prompts.trajectory import MAX_EXCERPT_BYTES, build_trajectory_prompt
 from .reviewers import register_builtin_reviewers
@@ -173,6 +174,14 @@ DEFAULT_DEEP_ANALYSIS_TIMEOUT_S = 60.0
 MIN_SUSPEND_WAIT_S = 1.0
 #: Remaining budget below which the call is delegated instead of blocked.
 MIN_DELEGATE_REMAINING_S = 5.0
+#: Budget the deep layer must still hold before it spends a second request on an
+#: unreadable answer. Below it the first answer stands as evidence: a retry that
+#: cannot finish is a timeout, and a timeout is not better evidence than prose.
+MIN_DEEP_RETRY_S: Final[float] = 1.0
+#: Note written on a deep verdict that only became readable on the retry. It rides
+#: in FastVerdict.note, so the audit row keeps the fact that the first answer was
+#: prose without inventing a second score for it.
+DEEP_RETRY_NOTE: Final[str] = "readable_on_retry"
 #: Fallback cap of one fast-judge round trip, used when `jev_timeout_s` is absent.
 #: The live value comes from the configuration, because a local judge can cold
 #: start slower than five seconds; this name stays for callers that build a judge
@@ -207,10 +216,33 @@ REASON_SUSPEND_BUDGET = "剩余等待预算不足 30 秒，按超时拒绝（未
 REASON_DELEGATE_WINDOW = "委派前剩余时间不足 5 秒，已拒绝；请稍后重试同一调用"
 REASON_STORE_UNAVAILABLE = "审计存储不可用，按拦截处理"
 REASON_CLOSED = "网关已关闭，按拦截处理"
+#: Text handed to the model when an approved call could NOT be executed inline
+#: (no delegate budget left, or the approval had already been spent). It names
+#: the ticket and spells out what "identical" means, because the model has to
+#: reproduce bytes it wrote itself: an earlier production run lost every
+#: approval this way -- {"path","content"} came back without "path", and four
+#: HTML/script bodies came back rewritten -- so the instruction states that the
+#: comparison is on the arguments themselves, that key order does not matter,
+#: and that one approval replays exactly once.
 REASON_APPROVED = (
-    "管理员已批准该工具的一次同参数调用，但本次调用不会自动重放；"
-    "请由模型重新发起一次完全相同的调用。"
+    "管理员已批准本次调用（票据 {ticket}），但网关未能在本次预算内就地执行，"
+    "批准仍挂在票据上。请原样复用上一轮调用的 arguments 重新发起同一次调用："
+    "键序无关，但每个字段的值必须与上一轮逐字节相同（正文不要重写、不要精简、"
+    "不要补全）。该批准只能重放一次；任何参数改动都会按新调用重新审批。"
 )
+#: Text handed to the model when the approval was consumed and the very call the
+#: administrator approved is executed by this same round.
+REASON_APPROVED_EXECUTED = (
+    "管理员已批准本次调用（票据 {ticket}），网关已按批准直接执行同一份参数，"
+    "无需重发该调用；请根据工具返回结果继续。"
+)
+#: Taint label of a call that replaced a standing approval with different
+#: arguments. Advisory only: it is recorded so the audit shows that a call of an
+#: approved tool was not the call the administrator approved, and the consensus
+#: still judges it on its own merits (it is a fresh call, not a retry).
+LABEL_CHANGED_AFTER_APPROVAL = "changed_after_approval"
+#: How long a handed-out approval stays interesting for that comparison.
+APPROVAL_RETRY_TTL_S = 300.0
 REASON_DENIED = "管理员拒绝了本次工具调用，请勿重试同一调用。"
 REASON_TIMEOUT = "管理员在等待窗口内未作出决定，按超时拒绝（未执行）。"
 REASON_CANCELED = "外层请求已取消，票据转 canceled_external（未执行）。"
@@ -1646,6 +1678,11 @@ class Gateway:
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._sequences: dict[str, int] = {}
         self._wait_tasks: set[asyncio.Task[Any]] = set()
+        #: (subject, session, tool) of approvals this process recently handed
+        #: out, mapped to the instant. A later call of the same tool whose
+        #: arguments differ is not a retry of the approval; it is a fresh call,
+        #: and the audit has to say so (see _mark_changed_after_approval).
+        self._recent_approvals: dict[tuple[str, str, str], float] = {}
         self._wait_tickets: dict[str, asyncio.Task[Any]] = {}
         self._assembly_lock = threading.Lock()
         self._closed = False
@@ -3240,6 +3277,13 @@ class Gateway:
                 base=base,
             )
             plan = _stamp_intent(plan, call_id)
+            plan = self._mark_changed_after_approval(
+                plan,
+                subject=subject,
+                session=session,
+                tool=tool,
+                digest_value=digest_value,
+            )
             # Requirement: Layered Consensus.  The deep reviewer is one of the
             # three layers and has already run inside _decide, on the same payload
             # as the fast judge.  There is no second deep pass here: _deep_dispatch
@@ -3364,6 +3408,7 @@ class Gateway:
             session=session,
             args=args,
             deadline=suspend_deadline,
+            exec_deadline=deadline,
             snapshot=snapshot,
             context=context,
             event=event,
@@ -3715,6 +3760,7 @@ class Gateway:
         session: str,
         args: Mapping[str, Any],
         deadline: float,
+        exec_deadline: float,
         snapshot: PolicySnapshot,
         context: Any,
         event: Any,
@@ -3723,8 +3769,11 @@ class Gateway:
         """Notify the administrators and wait inside the call budget.
 
         Requirement: Approval Wait and Exact-Match Retry; Late Decision
-        Disclosure. Approval never replays the call: this round returns a
-        suspension answer and the model may issue one fresh identical call.
+        Disclosure. An approval is executed by this very round whenever the
+        remaining call budget can still delegate (see _execute_on_approval); the
+        model is only asked to resend the identical call when it cannot, because
+        asking a model to reproduce its own bytes failed four times in five on
+        production.
 
         Args:
             plan: The suspension plan.
@@ -3733,7 +3782,11 @@ class Gateway:
             subject: Requester key.
             session: Session key.
             args: Raw arguments.
-            deadline: Call deadline.
+            deadline: Suspension deadline the wait is bounded by.
+            exec_deadline: Deadline of the outer tool call. The delegate window
+                is measured against this one rather than the suspension deadline:
+                an approval arriving 100 seconds into a 110 second wait still
+                has the remainder of the call budget to execute in.
             snapshot: Policy snapshot.
             context: Host tool-call context.
             event: Host message event, when available.
@@ -3813,9 +3866,30 @@ class Gateway:
             if task is not None:
                 self._wait_tasks.discard(task)
         if state == APPROVED:
+            executed = self._execute_on_approval(
+                conn,
+                plan,
+                ticket_id=ticket_id,
+                tool=tool,
+                subject=subject,
+                session=session,
+                args=args,
+                snapshot=snapshot,
+                digest_value=digest_value,
+                deadline=exec_deadline,
+            )
+            if executed is not None:
+                return executed
+            # The approval is still standing on the ticket, unconsumed, because
+            # this round could not execute it. What remains is the exact-match
+            # resend, and the text has to carry the whole rule: the model wrote
+            # those arguments once and must reproduce them byte for byte.
+            self._note_approval_use(
+                subject, session, tool, digest_value, executed=False
+            )
             return CallOutcome(
                 decision=Decision.SUSPENDED.value,
-                text=REASON_APPROVED,
+                text=self._redact(_approval_resend_text(ticket_id)),
                 ticket_id=ticket_id,
                 state=APPROVED,
                 would_be=plan.would_be,
@@ -3858,6 +3932,188 @@ class Gateway:
             rule_id=final.rule_id,
             judge_route=final.judge_route,
         )
+
+    def _execute_on_approval_enabled(self) -> bool:
+        """Return whether an approval may be executed by the round that took it.
+
+        Requirement: Approval Wait and Exact-Match Retry. The switch defaults to
+        on, so a configuration written before it existed keeps the behaviour; an
+        operator can turn it off to return to the resend protocol untouched.
+        """
+        return bool(getattr(self._config, "execute_on_approval", True))
+
+    def _execute_on_approval(
+        self,
+        conn: Any,
+        plan: _Plan,
+        *,
+        ticket_id: str,
+        tool: str,
+        subject: str,
+        session: str,
+        args: Mapping[str, Any],
+        snapshot: PolicySnapshot,
+        digest_value: str,
+        deadline: float,
+    ) -> CallOutcome | None:
+        """Consume the approval and let this round execute the approved call.
+
+        Requirement: Approval Wait and Exact-Match Retry.
+
+        Why the gateway executes instead of asking the model to repeat itself:
+        the exact-match retry handed a byte-for-byte obligation to the party that
+        had already rewritten its own arguments. Of five approvals in one
+        production window, four never matched -- a file_write answered
+        {"path", "content"} came back without "path", and three HTML/script
+        bodies came back edited -- and the fifth matched only because the model
+        happened to resend identical bytes. The approval already names exactly one
+        call, and the only party that can keep that promise is the gateway holding
+        the ticket.
+
+        Every refusal returns None and leaves the approval on the ticket, so the
+        caller falls back to the text asking for an identical resend: consent
+        switched off, no delegate budget left in the outer call, or a store that
+        refused the consume (already spent, or past its window).
+
+        Args:
+            conn: Open store the ticket lives in.
+            plan: The suspension plan being approved.
+            ticket_id: Ticket the administrator approved.
+            tool: Public tool name.
+            subject: Requester key.
+            session: Session key.
+            args: The raw arguments, exactly the ones the ticket was opened for.
+            snapshot: Policy snapshot of this call.
+            digest_value: Digest those arguments were hashed to.
+            deadline: Deadline of the outer tool call.
+
+        Returns:
+            The allow outcome when the approved call executes here, else None.
+        """
+        if not self._execute_on_approval_enabled():
+            return None
+        if not can_delegate(deadline, self._clock()):
+            return None
+        try:
+            consumed = tickets.consume_approved(
+                conn,
+                ticket_id,
+                subject_key=subject,
+                session_key=session,
+                tool_name=tool,
+                args_digest=digest_value,
+            )
+        except Exception:  # noqa: BLE001 - an unreadable store cannot authorize
+            consumed = False
+        if not consumed:
+            return None
+        final = _stamp_intent(
+            replace(
+                plan,
+                decision=Decision.ALLOW_APPROVED_RETRY,
+                reason=REASON_APPROVED_RETRY,
+            ),
+            plan.call_id,
+        )
+        self._record(
+            final,
+            tool=tool,
+            subject=subject,
+            session=session,
+            args=args,
+            ticket_id=ticket_id,
+            snapshot=snapshot,
+            digest_value=digest_value,
+        )
+        self._note_approval_use(subject, session, tool, digest_value, executed=True)
+        return CallOutcome(
+            decision=Decision.ALLOW_APPROVED_RETRY.value,
+            text=self._redact(_approved_text(ticket_id)),
+            ticket_id=ticket_id,
+            state=APPROVED,
+            would_be=plan.would_be,
+            rule_id=plan.rule_id,
+            judge_route=plan.judge_route,
+        )
+
+    def _note_approval_use(
+        self,
+        subject: str,
+        session: str,
+        tool: str,
+        digest_value: str,
+        *,
+        executed: bool,
+    ) -> None:
+        """Remember one approval and whether this round executed it.
+
+        Requirement: Approval Wait and Exact-Match Retry. The memory exists for
+        two readers only: the changed-arguments check below, and nobody else. It
+        holds no authorization -- an authorization is the ticket row, consumed
+        atomically -- so losing this entry can never grant a call. Entries older
+        than APPROVAL_RETRY_TTL_S are dropped here, so the map cannot grow with
+        the process uptime.
+
+        Args:
+            subject: Requester key.
+            session: Session key.
+            tool: Public tool name.
+            digest_value: Digest the approval was granted for.
+            executed: True when the approved call was executed already, so a
+                later call of this tool is simply a new call rather than a
+                rewrite of the approved one.
+        """
+        now = self._clock()
+        self._recent_approvals[(subject, session, tool)] = (
+            now,
+            digest_value,
+            not executed,
+        )
+        stale = [
+            key
+            for key, seen in self._recent_approvals.items()
+            if now - seen[0] > APPROVAL_RETRY_TTL_S
+        ]
+        for key in stale:
+            self._recent_approvals.pop(key, None)
+
+    def _mark_changed_after_approval(
+        self,
+        plan: _Plan,
+        *,
+        subject: str,
+        session: str,
+        tool: str,
+        digest_value: str,
+    ) -> _Plan:
+        """Tag an allowed call that rewrote the arguments of a standing approval.
+
+        Requirement: Approval Wait and Exact-Match Retry; Taint Labels. A call
+        that arrives after an approval for the same tool, with different
+        arguments and while that approval is still unconsumed, is not the
+        approved call: it is a new call wearing its name. The gateway does not
+        block it -- the layers judged it on its own merits -- but the audit has
+        to show that the human approved something else, otherwise the trail reads
+        as if the administrator had released it.
+
+        Returns:
+            The plan unchanged, or with LABEL_CHANGED_AFTER_APPROVAL appended.
+        """
+        if plan.decision is Decision.ALLOW_APPROVED_RETRY:
+            return plan
+        if plan.decision not in ALLOW_DECISIONS:
+            return plan
+        if LABEL_CHANGED_AFTER_APPROVAL in plan.labels:
+            return plan
+        seen = self._recent_approvals.get((subject, session, tool))
+        if seen is None:
+            return plan
+        instant, approved_digest, pending = seen
+        if not pending or self._clock() - instant > APPROVAL_RETRY_TTL_S:
+            return plan
+        if digest_value == approved_digest:
+            return plan
+        return replace(plan, labels=plan.labels + (LABEL_CHANGED_AFTER_APPROVAL,))
 
     def _suspend_cap(self) -> float:
         """Return this gateway's effective suspension cap in seconds.
@@ -6100,6 +6356,17 @@ class Gateway:
         The payload is redacted inside the client as well; ``build_state`` already
         anonymized it, and neither layer may send a raw field out.
 
+        One retry is spent when the first answer is unreadable, and only when the
+        budget still holds ``MIN_DEEP_RETRY_S`` seconds. Evidence for it: the deep
+        layer ran on a chat-tuned model (deepseek-v4.1-flash) whose answers were
+        role-play prose rather than JSON, so every deep vote was an abstention and
+        every undecided call was escalated to a human; the retry message names
+        that failure instead of repeating the same request, and on the same model
+        it is what turns an abstention back into a readable score. A second
+        unreadable answer is returned as it came, with its own evidence, so the
+        audit still says the deep layer could not read -- it never fabricates a
+        score to escape a suspension.
+
         Args:
             budget_s: Per-request budget, also handed to the client as its own
                 timeout so the reviewer and the transport cannot disagree.
@@ -6111,14 +6378,30 @@ class Gateway:
         if client is None:
             return None
 
-        async def _judge(payload: Mapping[str, Any]) -> Any:
+        async def _ask(body: str, timeout_s: float) -> Any:
             text = await client.review(
-                build_deep_body(state=payload),
-                timeout_s=budget_s,
+                body,
+                timeout_s=timeout_s,
                 system_prompt=DEEP_SYSTEM_PROMPT,
                 response_format=DEEP_RESPONSE_FORMAT,
             )
             return parse_text_answer(text)
+
+        async def _judge(payload: Mapping[str, Any]) -> Any:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            verdict = await _ask(build_deep_body(state=payload), budget_s)
+            if verdict.score_pct is not None:
+                return verdict
+            remaining = budget_s - (loop.time() - started)
+            if remaining < MIN_DEEP_RETRY_S:
+                return verdict
+            retried = await _ask(
+                build_deep_retry_body(state=payload), min(remaining, budget_s)
+            )
+            if retried.score_pct is None:
+                return retried
+            return replace(retried, note=DEEP_RETRY_NOTE)
 
         return _judge
 
@@ -6420,6 +6703,16 @@ def _published_fold(verdicts: Mapping[str, Any]) -> Mapping[str, Any]:
         if isinstance(fold, Mapping):
             return fold
     return {}
+
+
+def _approved_text(ticket_id: str) -> str:
+    """Return the text handed to the model when an approval executed the call."""
+    return REASON_APPROVED_EXECUTED.format(ticket=ticket_id)
+
+
+def _approval_resend_text(ticket_id: str) -> str:
+    """Return the text handed to the model when the approval must be resent."""
+    return REASON_APPROVED.format(ticket=ticket_id)
 
 
 def _outcome_degraded(outcome: Any) -> str | None:
