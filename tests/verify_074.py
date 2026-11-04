@@ -210,6 +210,18 @@ written = notices.record_deliveries(
 check("only a real delivery is recorded", written, 1)
 check("the delivered ticket is a candidate",
       notices.delivered_ticket_ids(conn, ADMIN), [ticket.ticket_id])
+notices.record_deliveries(
+    conn,
+    ticket.ticket_id,
+    [{"admin": ADMIN, "target": "aiocqhttp:FriendMessage:1234567", "result": "private"}],
+    sent_at="2026-11-04T10:00:00Z",
+)
+rows = conn.execute(
+    "SELECT sent_at FROM notice_deliveries WHERE ticket_id = ? AND admin = ?",
+    (ticket.ticket_id, ADMIN),
+).fetchall()
+check("a repeated delivery replaces the earlier row", [r[0] for r in rows],
+      ["2026-11-04T10:00:00Z"])
 check("a rejected delivery names no candidate",
       notices.delivered_ticket_ids(conn, "9999999"), [])
 tickets.transition(conn, ticket.ticket_id, (tickets.PENDING,), tickets.DENIED, actor=ADMIN)

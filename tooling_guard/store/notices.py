@@ -99,7 +99,12 @@ def record_deliveries(
         rows.append((ticket_id, admin, target, stamp))
     if not rows:
         return 0
+    ids = sorted({row[1] for row in rows})
     try:
+        conn.executemany(
+            "DELETE FROM notice_deliveries WHERE ticket_id = ? AND admin = ?",
+            [(ticket_id, admin) for admin in ids],
+        )
         conn.executemany(
             "INSERT INTO notice_deliveries (ticket_id, admin, target, sent_at)"
             " VALUES (?, ?, ?, ?)",
